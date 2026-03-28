@@ -1,0 +1,19 @@
+{
+  "base_frequency": 2.0,
+  "base_amplitude": 0.5,
+  "shoulder_hip_amp": 0.8,
+  "elbow_stifle_amp": 1.2,
+  "carpus_hock_amp": 0.0,
+  "abduction_amp": 0.1,
+  "stance_power": 1.5,
+  "swing_power": 1.2,
+  "phase_offsets": [0.5, 0.0, 0.5, 0.0],
+  "knee_phase_shift": 0.1,
+  "hock_phase_shift": 0.0,
+  "knee_swing_mult": 1.5,
+  "knee_stance_mult": 0.8,
+  "fitness": 0.0,
+  "generation": 0,
+  "skill_weights": {"walk": 1.0},
+  "_comment": "Initial CPG params for Go2 (3 joints/leg: hip_abduction, thigh, calf). No ankle joint."
+}

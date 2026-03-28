@@ -1,0 +1,33 @@
+{
+  "name": "Go2",
+  "template": "unitree_go2",
+  "created_at": "2026-03-04T14:00:00",
+  "description": "Unitree Go2 quadruped from MuJoCo Menagerie (BSD-3-Clause). Standard RL benchmark robot.",
+  "genome_data": null,
+  "state_data": null,
+  "model_source": "google-deepmind/mujoco_menagerie/unitree_go2",
+  "license": "BSD-3-Clause",
+  "n_joints": 12,
+  "joints_per_leg": 3,
+  "leg_order": ["FL", "FR", "RL", "RR"],
+  "joint_names_per_leg": ["hip", "thigh", "calf"],
+  "standing_height": 0.27,
+  "mass_kg": 10.0,
+  "root_body": "base",
+  "pd_kp": [60, 60, 80, 60, 60, 80, 60, 60, 80, 60, 60, 80],
+  "pd_kd": [2, 2, 3, 2, 2, 3, 2, 2, 3, 2, 2, 3],
+  "pd_scale": 0.4,
+  "pd_fallen_scale": 1.5,
+  "sensors": [
+    {"name": "imu", "sensor_type": "balance", "parent_segment": "base", "sensitivity": 1.0, "range": 0.0, "active": true},
+    {"name": "gyro", "sensor_type": "balance", "parent_segment": "base", "sensitivity": 1.0, "range": 0.0, "active": true},
+    {"name": "accel", "sensor_type": "motion", "parent_segment": "base", "sensitivity": 1.0, "range": 0.0, "active": true}
+  ],
+  "training_log": [],
+  "total_generations": 0,
+  "total_steps": 0,
+  "best_fitness": 0.0,
+  "parent_name": null,
+  "children": [],
+  "tags": ["unitree", "go2", "menagerie", "benchmark", "quadruped"]
+}

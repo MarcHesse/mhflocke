@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Environment / Secrets
+.env
+
+# Training outputs (generated, not source)
+creatures/*/v034_*/
+creatures/*/brain/
+checkpoints/
+
+# Media (generated from FLOGs)
+*.mp4
+*.wav
+*.mp3
+*.pt
+
+# Temporary files
+_render_*.png
+_render_*.xml
+_train_temp_*.xml
+_ppo_temp.xml
+ftp_sync.log
+*.log

@@ -1,0 +1,53 @@
+<mujoco model="go2_mhflocke">
+  <!-- MH-FLOCKE — Unitree Go2 Integration
+       Source: google-deepmind/mujoco_menagerie (BSD-3-Clause)
+       See LICENSE_unitree_go2 for license terms.
+       
+       Menagerie scene.xml + MH-FLOCKE sensors.
+       go2.xml and assets/ must be in the same directory.
+  -->
+
+  <include file="go2.xml"/>
+
+  <statistic center="0 0 0.1" extent="0.8"/>
+
+  <option timestep="0.005"/>
+
+  <visual>
+    <headlight diffuse="0.3 0.3 0.3" ambient="0.15 0.15 0.15" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="120" elevation="-20" offwidth="3840" offheight="2160"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0"
+             width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge"
+             rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+             markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true"
+              texrepeat="5 5" reflectance="0.2"/>
+  </asset>
+
+  <worldbody>
+    <!-- Main light: low angle from side for terrain shadow casting -->
+    <light pos="-20 -20 15" dir="0.5 0.5 -0.7" directional="true" 
+           diffuse="0.9 0.85 0.75" specular="0.3 0.3 0.3" castshadow="true"/>
+    <!-- Fill light: softer, from opposite side -->
+    <light pos="15 10 8" dir="-0.3 -0.2 -0.6" directional="true" 
+           diffuse="0.3 0.35 0.45" specular="0.0 0.0 0.0"/>
+    <geom name="floor" type="plane" size="50 50 0.1" material="groundplane"
+          friction="0.8 0.5 0.01"/>
+    <camera name="global" pos="-3 3 2" xyaxes="-1 -1 0 0.3 0 1" mode="trackcom"/>
+  </worldbody>
+
+  <!-- MH-FLOCKE Sensors -->
+  <sensor>
+    <accelerometer name="imu_accel" site="imu"/>
+    <gyro name="imu_gyro" site="imu"/>
+    <velocimeter name="velocimeter" site="imu"/>
+    <framequat name="torso_quat" objtype="body" objname="base"/>
+    <subtreecom name="center_of_mass" body="base"/>
+  </sensor>
+
+</mujoco>

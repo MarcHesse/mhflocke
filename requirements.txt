@@ -1,0 +1,27 @@
+# MH-FLOCKE — Python Dependencies
+# =================================
+# Install: pip install -r requirements.txt
+
+# ── Core Physics ──
+mujoco>=3.0.0
+numpy
+torch
+
+# ── Visualization + Video ──
+Pillow
+
+# ── Serialization ──
+msgpack
+
+# ── Dashboard ──
+flask
+
+# ── SNN Performance (optional, speeds up neural sim) ──
+numba
+
+# ── System Monitoring ──
+psutil
+
+# ── Optional: video rendering ──
+# soundfile        # sonification (WAV export)
+# pedalboard       # audio mastering (reverb, compression)
