@@ -1,0 +1,18 @@
+# MH-FLOCKE — Pi Requirements
+# =============================
+# Install on Raspberry Pi 4 (CPU-only, no CUDA needed):
+#
+#   pip3 install -r requirements-pi.txt \
+#     --index-url https://download.pytorch.org/whl/cpu \
+#     --break-system-packages
+#
+# IMPORTANT: Use --index-url to get CPU-only PyTorch (~150MB).
+# Without it, pip downloads the full CUDA version (~2GB) which
+# will fail on Pi due to disk space and has no GPU to use anyway.
+#
+# These are the ONLY dependencies needed for the Freenove Bridge v4.0.
+# The Freenove kit's own Python dependencies (smbus2, RPi.GPIO etc.)
+# are pre-installed on Raspberry Pi OS.
+
+torch>=2.0.0
+numpy>=1.24.0

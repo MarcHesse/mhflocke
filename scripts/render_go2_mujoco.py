@@ -580,7 +580,9 @@ def main():
     dash = None
     if args.overlay:
         from src.viz.go2_dashboard import Go2DashboardOverlay
-        dash = Go2DashboardOverlay(args.width, args.height)
+        # v0.4.2: Real population sizes from FLOG meta
+        flog_pops = flog.meta.get("population_sizes", None)
+        dash = Go2DashboardOverlay(args.width, args.height, population_sizes=flog_pops)
     events = EventOverlay(flog, args.speed, args.width, args.height) if args.overlay else None
 
     # Single ffmpeg pipe — title + main + end all in one stream

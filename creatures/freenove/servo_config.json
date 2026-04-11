@@ -1,0 +1,93 @@
+{
+    "_comment": "Freenove Robot Dog servo configuration for MH-FLOCKE bridge",
+    "_version": "1.0",
+    "_license": "Apache 2.0",
+
+    "servo_hardware": {
+        "controller": "PCA9685",
+        "i2c_address": "0x40",
+        "pwm_frequency": 50,
+        "angle_min": 18,
+        "angle_max": 162,
+        "neutral_angle": 90
+    },
+
+    "kinematics": {
+        "l1_hip_offset_mm": 23,
+        "l2_upper_leg_mm": 55,
+        "l3_lower_leg_mm": 55,
+        "body_length_mm": 136,
+        "body_width_mm": 76,
+        "standing_height_mm": 99,
+        "foot_width_mm": 96,
+        "_comment": "Freenove coordinate system: X=forward, Y=height(down), Z=lateral"
+    },
+
+    "leg_order": ["FL", "FR", "RL", "RR"],
+    "joints_per_leg": 3,
+
+    "servo_channels": {
+        "_comment": "PCA9685 channel assignments from Control.py run() method",
+        "FL": {"hip_yaw": 4, "hip_pitch": 3, "knee": 2},
+        "FR": {"hip_yaw": 5, "hip_pitch": 6, "knee": 7},
+        "RL": {"hip_yaw": 8, "hip_pitch": 9, "knee": 10},
+        "RR": {"hip_yaw": 11, "hip_pitch": 12, "knee": 13}
+    },
+
+    "servo_mapping": {
+        "_comment": "How to convert IK angles (a,b,c) to servo angles. From Control.py run()",
+        "FL": {
+            "hip_yaw":   {"formula": "a + cal_a",              "neutral": 90},
+            "hip_pitch":  {"formula": "90 - (b + cal_b)",       "neutral": 90},
+            "knee":      {"formula": "c + cal_c",              "neutral": 90}
+        },
+        "FR": {
+            "hip_yaw":   {"formula": "a + cal_a",              "neutral": 90},
+            "hip_pitch":  {"formula": "90 - (b + cal_b)",       "neutral": 90},
+            "knee":      {"formula": "c + cal_c",              "neutral": 90}
+        },
+        "RL": {
+            "hip_yaw":   {"formula": "a + cal_a",              "neutral": 90},
+            "hip_pitch":  {"formula": "90 + b + cal_b",         "neutral": 90},
+            "knee":      {"formula": "180 - (c + cal_c)",      "neutral": 90}
+        },
+        "RR": {
+            "hip_yaw":   {"formula": "a + cal_a",              "neutral": 90},
+            "hip_pitch":  {"formula": "90 + b + cal_b",         "neutral": 90},
+            "knee":      {"formula": "180 - (c + cal_c)",      "neutral": 90}
+        }
+    },
+
+    "mujoco_to_servo": {
+        "_comment": "Maps MuJoCo ctrl[-1..1] to servo degree offsets from neutral (90°)",
+        "_comment2": "MuJoCo: abd=hip_yaw, hip=hip_pitch, knee=knee. 3 joints/leg, 12 total.",
+        "_comment3": "ctrl_range_deg = max offset from neutral in degrees",
+        "FL": {
+            "hip_yaw":   {"ctrl_index": 0,  "range_deg": 30, "sign": 1},
+            "hip_pitch":  {"ctrl_index": 1,  "range_deg": 45, "sign": -1},
+            "knee":      {"ctrl_index": 2,  "range_deg": 45, "sign": 1}
+        },
+        "FR": {
+            "hip_yaw":   {"ctrl_index": 3,  "range_deg": 30, "sign": 1},
+            "hip_pitch":  {"ctrl_index": 4,  "range_deg": 45, "sign": -1},
+            "knee":      {"ctrl_index": 5,  "range_deg": 45, "sign": 1}
+        },
+        "RL": {
+            "hip_yaw":   {"ctrl_index": 6,  "range_deg": 30, "sign": 1},
+            "hip_pitch":  {"ctrl_index": 7,  "range_deg": 45, "sign": 1},
+            "knee":      {"ctrl_index": 8,  "range_deg": 45, "sign": -1}
+        },
+        "RR": {
+            "hip_yaw":   {"ctrl_index": 9,  "range_deg": 30, "sign": 1},
+            "hip_pitch":  {"ctrl_index": 10, "range_deg": 45, "sign": 1},
+            "knee":      {"ctrl_index": 11, "range_deg": 45, "sign": -1}
+        }
+    },
+
+    "safety": {
+        "max_speed_deg_per_step": 5,
+        "startup_delay_s": 1.0,
+        "emergency_stop_angle": 90,
+        "_comment": "Rate limiting prevents servo jerk. Emergency stop = all servos to neutral."
+    }
+}

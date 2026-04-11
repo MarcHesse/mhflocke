@@ -1,12 +1,23 @@
 """
-MH-FLOCKE — Brain 3D v0.4.1
+MH-FLOCKE — Brain 3D v0.4.2
 ========================================
 3D network visualization of SNN activity patterns.
+
+v0.4.2: Uses REAL population sizes from SNN topology.
+  Old: hardcoded 350 neurons with fake proportions (10%/45%/10%/5%/5%/25%)
+  New: actual population sizes from compute_cerebellar_populations()
+       e.g. Freenove: 48 MF + 106 GrC + 18 GoC + 24 PkC + 24 DCN + 12 OUT = 232
+       e.g. Go2: 304 MF + 4000 GrC + 200 GoC + 24 PkC + 24 DCN + 72 OUT = 4624
+
+  Spike data: from FLOG (real spikes, max 200 sampled) — NOT random noise.
+  Synapses: schematic (same connectivity pattern, correct proportions,
+            but not the exact synapse indices from the SNN — too many to store).
+  Positions: deterministic layout based on population sizes (golden ratio spacing).
 """
 
 import math
 import numpy as np
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, List
 from PIL import Image, ImageDraw, ImageFilter
 
 DEEP_SPACE = (10, 12, 18)
@@ -21,17 +32,17 @@ SYNAPSE_BASE = (30, 60, 120)
 SYNAPSE_ACTIVE = (0, 200, 220)
 OUTPUT_GOLD = (255, 200, 60)
 
-# Cerebellar architecture v0.3.0 — 6 populations
+# Cerebellar architecture — 6 populations
 LAYER_COLORS = {
     0: CYAN_ACCENT,     # Mossy Fibers (input)
     1: COOL_BLUE,       # Granule Cells (expansion, sparse)
     2: (200, 80, 80),   # Golgi Cells (inhibitory, red-ish)
     3: VIOLET_PULSE,    # Purkinje Cells (learning output)
     4: FIRE_ORANGE,     # DCN (motor correction)
-    5: OUTPUT_GOLD,     # Legacy output (compatibility)
+    5: OUTPUT_GOLD,     # Output neurons
 }
 LAYER_LABELS = ['MF', 'GrC', 'GoC', 'PkC', 'DCN', 'OUT']
-DENDRITE_COLOR = (120, 60, 180)  # Violet for PkC dendritic tree
+DENDRITE_COLOR = (120, 60, 180)
 
 
 def _lerp(c1, c2, t):
@@ -44,11 +55,22 @@ def _rgba(color, alpha):
 
 
 class BrainNetworkState:
-    """Persistent state across frames."""
+    """Persistent state across frames.
+    
+    v0.4.2: Accepts real population sizes instead of hardcoded percentages.
+    
+    Args:
+        n_neurons: total neuron count from SNN (e.g. 232 for Freenove, 4624 for Go2)
+        n_display: max neurons to render (caps at n_neurons)
+        population_sizes: dict with keys n_input, n_granule, n_golgi, n_purkinje, n_dcn, n_output
+                         If None, falls back to proportional estimates (legacy behavior).
+    """
 
-    def __init__(self, n_neurons: int, n_display: int = 350):
+    def __init__(self, n_neurons: int, n_display: int = 500,
+                 population_sizes: Optional[Dict[str, int]] = None):
         self.n_neurons = n_neurons
         self.n_display = min(n_display, n_neurons) if n_neurons > 0 else n_display
+        self.population_sizes = population_sizes
         self.angle = 0.0
         self.pulse_phase = 0.0
         self.fade = np.full(self.n_display, 10, dtype=np.int32)
@@ -60,15 +82,39 @@ class BrainNetworkState:
 
     def init_layout(self):
         n = self.n_display
-        # Cerebellar architecture v0.3.0: 6 populations
-        # MF(10%) → GrC(45%) → PkC(5%) → DCN(5%)
-        #           GoC(10%) ←─┘           OUT(25%, legacy)
-        n_mf = max(8, int(n * 0.10))
-        n_grc = max(20, int(n * 0.45))
-        n_goc = max(6, int(n * 0.10))
-        n_pkc = max(4, int(n * 0.05))
-        n_dcn = max(4, int(n * 0.05))
-        n_out = max(4, n - n_mf - n_grc - n_goc - n_pkc - n_dcn)
+
+        if self.population_sizes:
+            # REAL population sizes from SNN topology
+            ps = self.population_sizes
+            n_mf = ps.get('n_input', 48)
+            n_grc = ps.get('n_granule', 106)
+            n_goc = ps.get('n_golgi', 18)
+            n_pkc = ps.get('n_purkinje', 24)
+            n_dcn = ps.get('n_dcn', 24)
+            n_out = ps.get('n_output', 12)
+            total_real = n_mf + n_grc + n_goc + n_pkc + n_dcn + n_out
+
+            # Scale to n_display if needed (for large networks like Go2 4624 neurons)
+            if total_real > n:
+                scale = n / total_real
+                n_mf = max(4, int(n_mf * scale))
+                n_grc = max(4, int(n_grc * scale))
+                n_goc = max(2, int(n_goc * scale))
+                n_pkc = max(2, int(n_pkc * scale))
+                n_dcn = max(2, int(n_dcn * scale))
+                n_out = max(2, n - n_mf - n_grc - n_goc - n_pkc - n_dcn)
+            elif total_real < n:
+                # Pad output if n_display > total_real
+                n_out = n_out + (n - total_real)
+        else:
+            # Legacy fallback: estimate from n_display
+            n_mf = max(8, int(n * 0.10))
+            n_grc = max(20, int(n * 0.45))
+            n_goc = max(6, int(n * 0.10))
+            n_pkc = max(4, int(n * 0.05))
+            n_dcn = max(4, int(n * 0.05))
+            n_out = max(4, n - n_mf - n_grc - n_goc - n_pkc - n_dcn)
+
         self.layer_sizes = [n_mf, n_grc, n_goc, n_pkc, n_dcn, n_out]
 
         # Layer index per neuron
@@ -79,14 +125,11 @@ class BrainNetworkState:
             off += sz
 
         # 3D positions: cerebellar layout
-        # MF on far left, GrC large cloud, GoC small cluster above,
-        # PkC line, DCN small cluster, OUT on far right
         rng = np.random.RandomState(42)
         pts = np.zeros((n, 3), dtype=np.float32)
 
-        # X positions: spread across -2.0 to +2.0
         layer_x = [-2.0, -0.7, -0.7, 0.7, 1.4, 2.0]
-        layer_y_offset = [0.0, 0.0, 0.8, 0.0, 0.0, 0.0]  # GoC above GrC
+        layer_y_offset = [0.0, 0.0, 0.8, 0.0, 0.0, 0.0]
         layer_radius = [0.5, 1.2, 0.4, 0.3, 0.3, 0.5]
 
         off = 0
@@ -103,7 +146,8 @@ class BrainNetworkState:
 
         self.positions_3d = pts
 
-        # Synapses: cerebellar connectivity pattern
+        # Synapses: schematic cerebellar connectivity
+        # Uses CORRECT proportions but not exact synapse indices from SNN
         pairs = []
         off_mf = 0
         off_grc = n_mf
@@ -112,7 +156,7 @@ class BrainNetworkState:
         off_dcn = off_pkc + n_pkc
         off_out = off_dcn + n_dcn
 
-        # MF → GrC (feedforward, sparse — 4 inputs per GrC)
+        # MF → GrC (4 inputs per GrC, matching biology)
         for gi in range(off_grc, off_grc + n_grc):
             nc = min(4, n_mf)
             targets = rng.choice(range(off_mf, off_mf + n_mf), size=nc, replace=False)
@@ -125,14 +169,14 @@ class BrainNetworkState:
                 ti = rng.randint(off_goc, off_goc + n_goc)
                 pairs.append((gi, ti))
 
-        # GoC → GrC (inhibitory feedback, red connections)
+        # GoC → GrC (inhibitory feedback)
         for gi in range(off_goc, off_goc + n_goc):
             nc = max(3, n_grc // 10)
-            targets = rng.choice(range(off_grc, off_grc + n_grc), size=nc, replace=False)
+            targets = rng.choice(range(off_grc, off_grc + n_grc), size=min(nc, n_grc), replace=False)
             for ti in targets:
                 pairs.append((gi, ti))
 
-        # GrC → PkC (parallel fibers — main plastic connections)
+        # GrC → PkC (parallel fibers)
         for gi in range(off_grc, off_grc + n_grc):
             if rng.rand() < 0.3:
                 ti = rng.randint(off_pkc, off_pkc + n_pkc)
@@ -145,7 +189,7 @@ class BrainNetworkState:
 
         # DCN → OUT (motor output)
         for di in range(off_dcn, off_dcn + n_dcn):
-            nc = max(2, n_out // n_dcn)
+            nc = max(2, n_out // max(n_dcn, 1))
             targets = rng.choice(range(off_out, off_out + n_out), size=min(nc, n_out), replace=False)
             for ti in targets:
                 pairs.append((di, ti))
@@ -203,20 +247,16 @@ def render_brain_network(
     cx_r, sx_r = math.cos(a_x), math.sin(a_x)
 
     pts = state.positions_3d.copy()
-    # Rotate Y
     x2 = pts[:, 0] * cy + pts[:, 2] * sy
     z2 = -pts[:, 0] * sy + pts[:, 2] * cy
     pts[:, 0] = x2
     pts[:, 2] = z2
-    # Rotate X
     y2 = pts[:, 1] * cx_r - pts[:, 2] * sx_r
     z3 = pts[:, 1] * sx_r + pts[:, 2] * cx_r
     pts[:, 1] = y2
     pts[:, 2] = z3
 
-    # Project — FILL THE FRAME
     mid_x, mid_y = width * 0.5, height * 0.48
-    # Use large scale so network fills ~85% of frame
     base_scale = min(width, height) * 0.38
     cam_dist = 3.5
 
@@ -239,7 +279,7 @@ def render_brain_network(
     neu_d = ImageDraw.Draw(neuron_img)
     glow_d = ImageDraw.Draw(glow_img)
 
-    # ── SYNAPSES — always visible structure ──
+    # ── SYNAPSES ──
     for (src, dst) in state.synapse_pairs:
         x1, y1 = int(screen_x[src]), int(screen_y[src])
         x2, y2 = int(screen_x[dst]), int(screen_y[dst])
@@ -251,7 +291,6 @@ def render_brain_network(
         d_active = state.fade[dst] <= 2
 
         if s_active and d_active:
-            # Both active: bright cyan pulse
             col = SYNAPSE_ACTIVE
             alpha = int(200 * z_a * (0.7 + 0.3 * pulse))
             w = 2
@@ -260,7 +299,6 @@ def render_brain_network(
             alpha = int(100 * z_a)
             w = 1
         else:
-            # RESTING: still clearly visible as dim structure
             col = SYNAPSE_BASE
             alpha = int((35 + 10 * pulse) * z_a)
             w = 1
@@ -268,12 +306,12 @@ def render_brain_network(
         if alpha > 3:
             syn_d.line([(x1, y1), (x2, y2)], fill=_rgba(col, alpha), width=w)
 
-    # ── PkC DENDRITIC TREES (drawn before neurons so they're behind) ──
+    # ── PkC DENDRITIC TREES ──
     pkc_calcium = None
     if brain_state and 'pkc_calcium' in brain_state:
         pkc_calcium = brain_state.get('pkc_calcium', 0.0)
 
-    off_pkc = sum(state.layer_sizes[:3])  # After MF+GrC+GoC
+    off_pkc = sum(state.layer_sizes[:3])
     n_pkc = state.layer_sizes[3]
     for pi in range(n_pkc):
         idx = off_pkc + pi
@@ -281,11 +319,9 @@ def render_brain_network(
         z = depth[idx]
         z_fac = max(0.2, min(1.0, (z + 2.0) / 4.0))
 
-        # Apical dendrite: upward branching tree
         branch_h = int(28 * z_fac)
         spread = int(16 * z_fac)
         apical_alpha = int(60 * z_fac)
-        # Calcium glow on dendrites (brighter = CF active = LTD window)
         if pkc_calcium and pkc_calcium > 0.05:
             ca_boost = min(1.0, pkc_calcium * 2)
             den_col = _lerp(DENDRITE_COLOR, (255, 80, 80), ca_boost)
@@ -293,21 +329,17 @@ def render_brain_network(
         else:
             den_col = DENDRITE_COLOR
 
-        # Main trunk
         syn_d.line([(sx, sy_pos), (sx, sy_pos - branch_h)],
                    fill=_rgba(den_col, apical_alpha), width=1)
-        # 2 branches
         syn_d.line([(sx, sy_pos - branch_h), (sx - spread, sy_pos - branch_h - int(12 * z_fac))],
                    fill=_rgba(den_col, apical_alpha - 15), width=1)
         syn_d.line([(sx, sy_pos - branch_h), (sx + spread, sy_pos - branch_h - int(12 * z_fac))],
                    fill=_rgba(den_col, apical_alpha - 15), width=1)
-
-        # Basal dendrite: downward stub (CF input)
         basal_h = int(10 * z_fac)
         syn_d.line([(sx, sy_pos), (sx, sy_pos + basal_h)],
                    fill=_rgba((200, 80, 80), int(50 * z_fac)), width=1)
 
-    # ── NEURONS — back to front ──
+    # ── NEURONS ──
     order = np.argsort(-depth)
     for idx in order:
         sx, sy_pos = int(screen_x[idx]), int(screen_y[idx])
@@ -317,40 +349,37 @@ def render_brain_network(
         z_fac = max(0.2, min(1.0, (z + 2.0) / 4.0))
 
         fire_col = LAYER_COLORS.get(li, OUTPUT_GOLD)
-        if f == 0:  # JUST FIRED
+        if f == 0:
             col = fire_col
             r = int(7 * z_fac)
             gr = int(22 * z_fac)
             a = 255
-        elif f <= 2:  # FADING
+        elif f <= 2:
             t = f / 2.0
             col = _lerp(fire_col, LAYER_COLORS.get(li, DEEP_BLUE), t)
             r = int(5 * z_fac)
             gr = int(12 * z_fac * (1 - t * 0.5))
             a = int(230 - 50 * t)
-        elif f <= FADE_MAX:  # COOLING
+        elif f <= FADE_MAX:
             t = (f - 2) / max(FADE_MAX - 2, 1)
             col = _lerp(LAYER_COLORS[li], DEEP_BLUE, t * 0.5)
             r = int(4 * z_fac)
             gr = 0
             a = int(160 - 60 * t)
-        else:  # RESTING — still visible with layer color
+        else:
             col = _lerp(LAYER_COLORS[li], DEEP_SPACE, 0.4)
             r = max(2, int(3 * z_fac))
             gr = 0
             a = int(100 * z_fac)
 
-        # Glow
         if gr > 2:
             glow_d.ellipse([sx - gr, sy_pos - gr, sx + gr, sy_pos + gr],
                            fill=_rgba(col, int(60 * z_fac)))
 
-        # Neuron body
         if r >= 1:
             neu_d.ellipse([sx - r, sy_pos - r, sx + r, sy_pos + r],
                           fill=_rgba(col, a))
 
-        # Bright center for active neurons
         if f <= 1 and r >= 3:
             cr = max(1, r - 2)
             neu_d.ellipse([sx - cr, sy_pos - cr, sx + cr, sy_pos + cr],
@@ -390,14 +419,16 @@ def render_brain_network(
         except Exception:
             pass
 
-    # ── Layer labels ──
+    # ── Layer labels with neuron counts ──
     try:
         from src.viz.overlay_base import get_font
         lf = get_font(9, bold=True)
+        sf = get_font(7)
         for li, lbl in enumerate(LAYER_LABELS):
             col = LAYER_COLORS[li]
             ly = int(height * 0.12 + li * 24)
-            draw.text((5, ly), lbl, fill=_rgba(col, 160), font=lf)
+            count = state.layer_sizes[li] if li < len(state.layer_sizes) else 0
+            draw.text((5, ly), f"{lbl} {count}", fill=_rgba(col, 160), font=lf)
     except Exception:
         pass
 

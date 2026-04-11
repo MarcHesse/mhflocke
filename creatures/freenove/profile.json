@@ -1,0 +1,51 @@
+{
+  "name": "freenove",
+  "display_name": "Freenove Robot Dog (FNK0050)",
+  "version": "3.0",
+  "creature_type": "quadruped",
+
+  "n_joints": 13,
+  "joints_per_leg": 3,
+  "standing_height": 0.12,
+  "root_body": "base",
+
+  "pd_kp": [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3],
+  "pd_kd": [0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3],
+  "pd_scale": 0.3,
+  "pd_fallen_scale": 0.8,
+
+  "morphology": {
+    "body_length_mm": 136,
+    "body_width_mm": 76,
+    "hip_offset_mm": 23,
+    "upper_leg_mm": 55,
+    "lower_leg_mm": 55,
+    "standing_height_mm": 99,
+    "total_mass_g": 620,
+    "n_legs": 4,
+    "servo_model": "SG90",
+    "servo_range_deg": [18, 162]
+  },
+
+  "legs": {
+    "FL": {"index": 0, "channels": [4, 3, 2], "convention": "front"},
+    "RL": {"index": 1, "channels": [7, 6, 5], "convention": "front"},
+    "RR": {"index": 2, "channels": [8, 9, 10], "convention": "rear"},
+    "FR": {"index": 3, "channels": [11, 12, 13], "convention": "rear"}
+  },
+
+  "snn": {
+    "n_input": 48,
+    "n_hidden": 172,
+    "n_output": 12,
+    "n_total": 232,
+    "tonic_current": 10.0
+  },
+
+  "hardware": {
+    "compute": "Raspberry Pi 4",
+    "hostname": "robot",
+    "bridge": "scripts/freenove_bridge.py v2.4",
+    "cost_eur": 100
+  }
+}

@@ -1,5 +1,5 @@
 """
-MH-FLOCKE — Go2 Dashboard v0.4.1
+MH-FLOCKE — Go2 Dashboard v0.4.2
 ========================================
 PIL-based dashboard overlay for video rendering.
 """
@@ -686,7 +686,7 @@ def _brand_bar(w, h, stats):
     total = stats.get('total_steps', 50000)
 
     draw.text((10, 4), 'MH-FLOCKE', fill=(*CYAN, 240), font=_f(17, True))
-    draw.text((130, 6), 'Level 15 v0.4.1', fill=(*GREY, 180), font=_f(13))
+    draw.text((130, 6), 'Level 15 v0.4.2', fill=(*GREY, 180), font=_f(13))
 
     creature = stats.get('creature', 'Go2')
     task = stats.get('task', '')
@@ -908,7 +908,7 @@ class Go2DashboardOverlay:
       Scene: Scent markers + steering arrow
     """
 
-    def __init__(self, width=1920, height=1080):
+    def __init__(self, width=1920, height=1080, population_sizes=None):
         self.w = width
         self.h = height
 
@@ -935,6 +935,7 @@ class Go2DashboardOverlay:
         self._right_avail = self.bottom_y - 8  # available px for right column
 
         self._n = 0
+        self._population_sizes = population_sizes
 
         # Brain 3D Network — flagship visualization (LARGE)
         self._brain3d_fn = None
@@ -943,7 +944,7 @@ class Go2DashboardOverlay:
         try:
             from src.viz.brain_3d import render_brain_network, BrainNetworkState
             self._brain3d_fn = render_brain_network
-            self._brain3d_state = BrainNetworkState(n_neurons=350, n_display=350)
+            self._brain3d_state = BrainNetworkState(n_neurons=population_sizes.get("n_total", 350) if population_sizes else 350, n_display=min(500, population_sizes.get("n_total", 350) if population_sizes else 350), population_sizes=population_sizes)
             print(f'  Dashboard v2.0: L-overlay {width}x{height}, '
                   f'Brain 3D ACTIVE ({self.right_w}x{self._brain3d_h})')
         except ImportError as e:
@@ -1004,13 +1005,20 @@ class Go2DashboardOverlay:
             try:
                 snn_mix = stats.get('snn_mix', 0.1)
                 activity = max(0.03, min(0.15, snn_mix * 0.2))
-                spike_raster = np.random.binomial(1, activity, 350).astype(float)
+                # v0.4.2: Use real spike data from FLOG if available
+                spikes_data = stats.get('spikes', None)
+                if spikes_data is not None:
+                    spike_raster = np.array(spikes_data, dtype=float)
+                else:
+                    # Fallback: generate from firing rate (legacy FLOGs without spike data)
+                    n_viz = self._brain3d_state.n_display if self._brain3d_state else 350
+                    spike_raster = np.random.binomial(1, activity, n_viz).astype(float)
 
                 brain_img, self._brain3d_state = self._brain3d_fn(
                     spike_raster,
                     width=rw,
                     height=self._brain3d_h,
-                    n_display=350,
+                    n_display=self._brain3d_state.n_display if self._brain3d_state else 350,
                     state=self._brain3d_state,
                     brain_state=stats,
                 )

@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
 """
-MH-FLOCKE — Level 15 Training v0.4.1
+MH-FLOCKE — Level 15 Training v0.4.2
 =======================================
 "A dog doesn't stand still on a meadow."
+
+v0.4.2: Scalable SNN for hardware brain transfer.
+  - --n-hidden: SNN hidden neuron count (default from profile.json)
+  - --hardware-sensors: Bridge v2.5 sensor layout (12 servo + 2 CPG + 4 IMU)
+  - --no-vision: Disable visual channels for camera-less robots
+  - Cerebellar populations scale proportionally for small neuron counts
+  - Full 15-step cognitive loop runs with 232 neurons (Freenove)
 
 The creature learns WHAT to do (knowledge), WHY (drives), and HOW (actor + cerebellum).
 
@@ -29,7 +36,12 @@ Usage:
   python scripts/train_v032.py --scene "walk on flat meadow" --no-terrain
   python scripts/train_v032.py --steps 50000 --difficulty 0.4
 
-Author: MH-FLOCKE Level 15 v0.4.1
+  # Freenove brain transfer (232 neurons, hardware-matched sensors):
+  python scripts/train_v032.py --creature-name freenove \\
+    --scene "walk on flat meadow" --steps 50000 --no-terrain --no-sensory \\
+    --no-vision --hardware-sensors --auto-reset 500
+
+Author: MH-FLOCKE Level 15 v0.4.2
 """
 
 import sys, os
@@ -347,7 +359,7 @@ def main():
         (3.0, 1.5, 0.12),   # Stage 3: significant (~27°)
         (3.0, 2.0, 0.12),   # Stage 4: original position (~34°)
     ]
-    parser = argparse.ArgumentParser(description='MH-FLOCKE Level 15 v0.3.5')
+    parser = argparse.ArgumentParser(description='MH-FLOCKE Level 15 v0.4.2')
     parser.add_argument('--scene', type=str, default='walk on hilly grassland')
     parser.add_argument('--steps', type=int, default=200000)
     parser.add_argument('--xml', type=str, default='creatures/dm_quadruped/creature.xml')
@@ -369,6 +381,16 @@ def main():
     parser.add_argument('--auto-reset', type=int, default=0,
                         help='Auto-reset after N consecutive fallen steps (0=disabled, 500=recommended for Go2). '
                              'Biology: mother helps fallen pup. SNN/cerebellum weights preserved.')
+    parser.add_argument('--n-hidden', type=int, default=None,
+                        help='Number of hidden neurons in SNN. Default: from profile.json or 1000. '
+                             'Freenove: 172, Go2: 1000+')
+    parser.add_argument('--hardware-sensors', action='store_true',
+                        help='Use hardware-matched sensor encoding (Bridge v2.5 layout). '
+                             'Only channels available on real hardware: 12 servo + 2 CPG + 4 IMU. '
+                             'Required for sim-to-real brain transfer.')
+    parser.add_argument('--no-vision', action='store_true',
+                        help='Disable visual heading/distance sensor channels. '
+                             'Use for robots without camera/vision sensor.')
     args = parser.parse_args()
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -384,7 +406,7 @@ def main():
         torch.backends.cudnn.benchmark = False
 
     print(f'\n{"="*65}')
-    print(f'  MH-FLOCKE -- Level 15 v0.3.4')
+    print(f'  MH-FLOCKE -- Level 15 v0.4.2')
     print(f'  "A dog doesn\'t stand still on a meadow."')
     print(f'{"="*65}')
     print(f'  Scene: "{args.scene}"')
@@ -403,6 +425,18 @@ def main():
               f'standing_h={profile.get("standing_height", "?")}')
     # Go2 body name is 'base', dm_quadruped is '{name}_s0'
     root_body_name = profile.get('root_body', 'base') if profile else f'{args.creature_name.lower()}_s0'
+
+    # --- Resolve n_hidden from CLI > profile > default ---
+    n_hidden = args.n_hidden
+    if n_hidden is None and profile and 'snn' in profile:
+        n_hidden = profile['snn'].get('n_hidden', 1000)
+    if n_hidden is None:
+        n_hidden = 1000
+    if args.hardware_sensors:
+        print(f'  Hardware sensors: ON (Bridge v2.5 layout)')
+    if args.no_vision:
+        print(f'  Vision channels: DISABLED')
+    print(f'  SNN hidden neurons: {n_hidden}')
 
     print(f'\n  -- Phase 0: Knowledge Acquisition --')
     knowledge = acquire_knowledge(args.scene, creature_type='dog', use_llm=not args.no_llm)
@@ -459,13 +493,21 @@ def main():
             creature = MuJoCoCreatureBuilder.build(
                 genome, world=world, device=device,
                 creature_name=args.creature_name.lower(),
-                xml_path=temp_xml)
+                xml_path=temp_xml,
+                n_hidden_neurons=n_hidden,
+                hardware_sensors=args.hardware_sensors,
+                no_vision=args.no_vision,
+                profile=profile)
             os.remove(temp_xml)
         else:
             creature = MuJoCoCreatureBuilder.build(
                 genome, world=world, device=device,
                 creature_name=args.creature_name.lower(),
-                xml_path=xml_path)
+                xml_path=xml_path,
+                n_hidden_neurons=n_hidden,
+                hardware_sensors=args.hardware_sensors,
+                no_vision=args.no_vision,
+                profile=profile)
             print(f'  Terrain: flat (no heightfield)')
     else:
         # Legacy inline MJCF (dm_quadruped etc.)
@@ -477,7 +519,12 @@ def main():
             print(f'  Terrain injected: {terrain_cfg.terrain_type} (h_max={terrain_cfg.max_height * terrain_cfg.difficulty / 0.3:.3f}m)')
         else:
             print(f'  Terrain: flat (no heightfield)')
-        creature = MuJoCoCreatureBuilder.build(genome, world=world, device=device, creature_name=args.creature_name.lower(), xml_string=xml_string)
+        creature = MuJoCoCreatureBuilder.build(genome, world=world, device=device,
+            creature_name=args.creature_name.lower(), xml_string=xml_string,
+            n_hidden_neurons=n_hidden,
+            hardware_sensors=args.hardware_sensors,
+            no_vision=args.no_vision,
+            profile=profile)
     creature.SNN_SUBSTEPS = args.snn_substeps
     # Protect cerebellar populations from CognitiveBrain learning
     # (GrC patterns must stay stable for Marr-Albus learning)
@@ -722,8 +769,28 @@ def main():
         print(f'\n  Brain found: {bi.get("n_episodes", 0)} episodes, '
               f'{bi.get("n_concepts", 0)} concepts, '
               f'{bi.get("snn_steps", 0)} SNN steps')
-        load_brain(creature.brain, creature.snn, brain_file_auto)
-        print(f'  Brain loaded: {brain_file_auto}')
+        # TOPOLOGY CHECK: if saved SNN size != current SNN size,
+        # strip the SNN state from brain.pt before loading.
+        # Cognitive components (memory, concepts, world model) still load.
+        _brain_state = torch.load(brain_file_auto, map_location='cpu', weights_only=False)
+        _snn_mismatch = False
+        if 'snn' in _brain_state:
+            _saved_v = _brain_state['snn'].get('V', None)
+            if _saved_v is not None and _saved_v.shape[0] != creature.snn.config.n_neurons:
+                _snn_mismatch = True
+                print(f'  ⚠ Brain topology mismatch: saved SNN={_saved_v.shape[0]} neurons, '
+                      f'current SNN={creature.snn.config.n_neurons}. Stripping SNN state.')
+                del _brain_state['snn']
+        # Save stripped state to temp file, load via standard load_brain()
+        _tmp_brain = brain_file_auto + '.tmp'
+        torch.save(_brain_state, _tmp_brain)
+        del _brain_state
+        load_brain(creature.brain, creature.snn, _tmp_brain)
+        os.remove(_tmp_brain)
+        if _snn_mismatch:
+            print(f'  Brain loaded (cognitive only, SNN fresh): {brain_file_auto}')
+        else:
+            print(f'  Brain loaded: {brain_file_auto}')
         print(f'  → Episodic memory, concept graph, world model, skills restored')
     else:
         print(f'\n  No brain.pt found — starting with fresh cognitive state')
@@ -744,7 +811,17 @@ def main():
                 'difficulty': terrain_cfg.difficulty,
                 'steps': total_steps,
                 'device': device,
-                'version': 'v0.3.4',
+                'version': 'v0.4.2',
+                'n_neurons': creature.snn.config.n_neurons,
+                'population_sizes': {
+                    'n_input': creature.n_input_neurons,
+                    'n_output': creature.n_output_neurons,
+                    'n_granule': len(creature.snn.populations.get('granule_cells', [])),
+                    'n_golgi': len(creature.snn.populations.get('golgi_cells', [])),
+                    'n_purkinje': len(creature.snn.populations.get('purkinje_cells', [])),
+                    'n_dcn': len(creature.snn.populations.get('dcn', [])),
+                    'n_total': creature.snn.config.n_neurons,
+                },
             }
             recorder = TrainingRecorder(flog_path, meta=flog_meta)
             print(f'  FLOG: {flog_path}')
@@ -1252,6 +1329,13 @@ def main():
         creature._terrain_corr = terrain_corr  # Phase B terrain reflex corrections
         creature._olfactory_steering = sensor_data.get('olfactory_steering', 0.0)
 
+        # Store CPG phase for hardware sensor encoding (Bridge v2.5 compatibility)
+        if args.hardware_sensors and hasattr(spinal_cpg, '_phases'):
+            import math
+            _phase_rad = float(spinal_cpg._phases[0])
+            creature._cpg_phase_input = np.array(
+                [math.sin(_phase_rad), math.cos(_phase_rad)], dtype=np.float32)
+
         step_result = creature.step(
             reward_signal=reward,
             extra_sensor_data={
@@ -1515,7 +1599,7 @@ def main():
         'vel_ema': gate.vel_ema,
         'cpg_phases': spinal_cpg._phases.tolist(),
         'cpg_step': spinal_cpg._step,
-        'version': 'v0.3.5', 'scene': args.scene, 'seed': args.seed,
+        'version': 'v0.4.2', 'scene': args.scene, 'seed': args.seed,
         'terrain_type': terrain_cfg.terrain_type, 'terrain_difficulty': terrain_cfg.difficulty,
         'flog_path': flog_path,
         'flog_frames': recorder.frame_count if recorder else 0,

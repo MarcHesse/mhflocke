@@ -50,6 +50,50 @@ python flog_server.py
 - PyTorch
 - NumPy, msgpack
 
+## Freenove Robot Dog — Sim-to-Real
+
+MH-FLOCKE runs on real hardware using the Freenove Robot Dog Kit (FNK0050, ~100€).
+The Raspberry Pi 4 runs the **same SNN and cerebellum code** as the MuJoCo simulator — one codebase, two platforms. A brain trained in simulation transfers directly to the real robot.
+
+### Hardware Setup
+
+- Kit: [Freenove FNK0050](https://www.freenove.com/fnk0050) (~100€)
+- Compute: Raspberry Pi 4 (2GB+ RAM)
+- 12 SG90 servos, PCA9685 driver, MPU6050 IMU
+- SNN: 232 neurons (48 MF + 106 GrC + 18 GoC + 24 PkC + 24 DCN + 12 OUT)
+- Control loop: 29Hz with PyTorch CPU-only
+
+### Running on Pi
+
+```bash
+# Install PyTorch CPU-only
+pip3 install torch --index-url https://download.pytorch.org/whl/cpu --break-system-packages
+
+# Deploy brain code (same src/brain/ as simulator)
+scp -r src/brain/ admin@<pi-hostname>:~/src/brain/
+scp scripts/freenove_bridge.py admin@<pi-hostname>:~/
+
+# Walk with SNN + Cerebellum
+python3 freenove_bridge.py --gait walk --snn --fresh --verbose --duration 120
+
+# Transfer sim-trained brain
+scp creatures/freenove/brain/brain.pt admin@<pi-hostname>:~/brain.pt
+python3 freenove_bridge.py --gait walk --snn --verbose --duration 120
+```
+
+### Live Dashboard
+
+The Bridge includes a web dashboard showing real-time SNN activity:
+
+```bash
+python3 freenove_bridge.py --gait walk --snn --dashboard --verbose --duration 300
+# Open http://<pi-hostname>:8080
+```
+
+Displays all 6 cerebellar populations with live spike data, servo angles, competence gate, and neuromodulation levels.
+
+Full deployment guide: [docs/FREENOVE_PI_DEPLOY.md](docs/FREENOVE_PI_DEPLOY.md)
+
 ## Architecture
 
 MH-FLOCKE implements a 15-step closed-loop processing cycle that runs at every simulation timestep (200 Hz):
@@ -91,18 +135,56 @@ python flog_server.py
 
 Features: distance/velocity charts, fall detection, CPG/actor weight tracking, cerebellar prediction error, behavioral state timeline.
 
+## Video Rendering
+
+Render training runs with the full dashboard overlay and data-driven sonification:
+
+```bash
+# Render Go2 training video
+python scripts/render_go2_mujoco.py creatures/go2/v034_.../training_log.bin
+
+# Render Freenove training video
+python scripts/render_freenove.py creatures/freenove/v034_.../training_log.bin
+
+# Add data-driven audio (SNN crackle, CPG heartbeat, cerebellum tones, DA melody)
+python scripts/sonify_flog.py --flog creatures/.../training_log.bin --speed 2 --mux output.mp4
+```
+
+The Brain3D visualization in rendered videos shows actual SNN topology and spike activity from the training data, with correct population sizes for each creature.
+
 ## Project Structure
 
 ```
 mhflocke/
-├── scripts/train_v032.py       # Main training loop
+├── scripts/
+│   ├── train_v032.py           # Main training loop
+│   ├── freenove_bridge.py      # Pi hardware bridge (unified codebase)
+│   ├── freenove_calibrate.py   # Servo calibration tool
+│   ├── render_go2_mujoco.py    # Go2 video renderer
+│   ├── render_freenove.py      # Freenove video renderer
+│   └── sonify_flog.py          # Data-driven audio from FLOG
 ├── src/
 │   ├── body/                   # MuJoCo creature, terrain, genome
 │   ├── brain/                  # SNN, cerebellum, CPG, cognitive brain
+│   │   ├── snn_controller.py   # Izhikevich SNN with R-STDP
+│   │   ├── cerebellar_learning.py  # Marr-Albus-Ito cerebellum
+│   │   ├── topology.py         # Shared population sizing (no MuJoCo dep)
+│   │   └── ...
+│   ├── viz/                    # Brain3D, dashboard overlay
 │   └── behavior/               # Drive-based behavior planner
-├── creatures/go2/              # Unitree Go2 configuration
+├── creatures/
+│   ├── go2/                    # Unitree Go2 configuration
+│   └── freenove/               # Freenove Robot Dog configuration
+│       ├── dashboard/          # Live web dashboard (real SNN data)
+│       ├── profile.json        # Robot profile + SNN topology
+│       └── servo_config.json   # Channel mapping
+├── docs/
+│   ├── FREENOVE_PI_DEPLOY.md   # Complete Pi deployment guide
+│   ├── ARCHITECTURE.md
+│   └── FLOG_FORMAT.md
 ├── flog_server.py              # FLOG analysis + dashboard
-└── docs/                       # Format specs
+├── requirements.txt            # Simulator dependencies
+└── requirements-pi.txt         # Raspberry Pi dependencies (CPU-only)
 ```
 
 ## Documentation
@@ -123,8 +205,29 @@ Full documentation with architecture details, API references, mathematical formu
 
 ## Videos
 
+- [Freenove Robot Dog — SNN on Real Hardware](https://www.youtube.com/watch?v=7iN8tB2xLHI)
 - [Video #3: Go2 Ball Interaction](https://www.youtube.com/watch?v=Jo7UM6pEFMg)
 - [YouTube Channel: @mhflocke](https://www.youtube.com/@mhflocke)
+
+## Changelog
+
+### v0.4.2 (2026-04-11)
+- **Freenove sim-to-real**: Unified codebase — Pi runs same `src/brain/` as simulator (PyTorch CPU-only). Brain trained in MuJoCo transfers directly to Raspberry Pi 4.
+- **Bridge v4.0**: `freenove_bridge.py` imports `src/brain/` directly. No separate SNN implementation for hardware.
+- **`topology.py`**: Shared cerebellar population computation without MuJoCo dependency. Both simulator and Pi use the same function.
+- **Brain3D visualization**: Population-aware layout driven by actual SNN topology and training data. Layer labels show per-population neuron counts.
+- **FLOG extended**: Training logs store `population_sizes` metadata (per-population neuron counts) for correct visualization.
+- **Live dashboard**: Web-based real-time display of all 6 cerebellar populations with live spike activity on Pi hardware.
+- **Pi deployment**: Complete guide (`docs/FREENOVE_PI_DEPLOY.md`), `requirements-pi.txt`, calibration tool, servo config.
+- **Renderers updated**: Both Freenove and Go2 renderers read population topology from FLOG metadata.
+
+### v0.4.0 (2026-04-06)
+- Initial Freenove integration: Bridge v2.5, IMU support, 8.2m first real-world run
+- Brain persistence across sessions (18,746 steps over 3 sessions)
+
+### v0.3.4 (2026-03-28)
+- Go2 50k training: 8.222m, 0 falls, actor competence 0.847
+- 10-seed ablation: B1 45.15±0.67m vs PPO 12.83±7.78m
 
 ## Acknowledgments
 
@@ -154,5 +257,5 @@ The Unitree Go2 model files in `creatures/go2/` are licensed under BSD-3-Clause 
 ## Contact
 
 - Website: [mhflocke.com](https://mhflocke.com)
-- Email: info@mhflocke.com
+- Email: marc@mhflocke.com
 - Reddit: [u/mhflocke](https://reddit.com/u/mhflocke)

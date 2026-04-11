@@ -1,0 +1,143 @@
+<mujoco model="freenove_robot_dog">
+  <!-- creature.xml — identical to freenove.xml v3.1 for train_v032.py compatibility -->
+  <!-- 12 actuators (no head), foot geoms named FL/FR/RL/RR for pipeline -->
+  <compiler angle="degree" coordinate="local" inertiafromgeom="true"/>
+  <option timestep="0.005" gravity="0 0 -9.81" iterations="50" solver="Newton" integrator="Euler"/>
+  <default>
+    <joint armature="0.005" damping="0.3" limited="true"/>
+    <geom friction="0.7 0.3 0.01" condim="3" conaffinity="1" contype="1" rgba="0.15 0.15 0.18 1"/>
+    <motor ctrllimited="true" ctrlrange="-1 1"/>
+  </default>
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+    <material name="acrylic" rgba="0.12 0.12 0.15 0.9"/>
+    <material name="acrylic_leg" rgba="0.1 0.1 0.13 0.85"/>
+    <material name="servo" rgba="0.15 0.15 0.55 1"/>
+    <material name="foot" rgba="0.08 0.08 0.08 1"/>
+    <material name="pcb" rgba="0.0 0.4 0.0 1"/>
+    <material name="battery" rgba="0.1 0.1 0.1 1"/>
+  </asset>
+  <worldbody>
+    <light pos="-2 -2 3" dir="0.5 0.5 -0.7" directional="true" diffuse="0.9 0.85 0.75" specular="0.3 0.3 0.3" castshadow="true"/>
+    <light pos="2 1 2" dir="-0.3 -0.2 -0.6" directional="true" diffuse="0.3 0.35 0.45"/>
+    <geom name="floor" type="plane" size="10 10 0.1" material="groundplane" contype="1" conaffinity="1"/>
+    <camera name="tracking" pos="-0.5 0.5 0.25" xyaxes="-1 -1 0 0.2 0 1" mode="trackcom"/>
+    <camera name="side" pos="0 0.5 0.15" xyaxes="-1 0 0 0 0 1" mode="trackcom"/>
+    <body name="base" pos="0 0 0.12">
+      <freejoint name="root"/>
+      <inertial pos="0 0 0.005" mass="0.35" diaginertia="0.0004 0.0008 0.0006"/>
+      <geom name="plate_bot" type="box" size="0.068 0.038 0.0015" pos="0 0 -0.003" material="acrylic" mass="0.04"/>
+      <geom name="plate_srv" type="box" size="0.068 0.038 0.0015" pos="0 0 0.007" material="acrylic" mass="0.04"/>
+      <geom name="plate_elc" type="box" size="0.068 0.038 0.0015" pos="0 0 0.020" material="acrylic" mass="0.04"/>
+      <geom name="plate_top" type="box" size="0.068 0.038 0.0015" pos="0 0 0.033" material="acrylic" mass="0.04"/>
+      <geom type="cylinder" size="0.003 0.018" pos=" 0.060  0.030 0.015" rgba="0.6 0.6 0.6 1" mass="0.003"/>
+      <geom type="cylinder" size="0.003 0.018" pos=" 0.060 -0.030 0.015" rgba="0.6 0.6 0.6 1" mass="0.003"/>
+      <geom type="cylinder" size="0.003 0.018" pos="-0.060  0.030 0.015" rgba="0.6 0.6 0.6 1" mass="0.003"/>
+      <geom type="cylinder" size="0.003 0.018" pos="-0.060 -0.030 0.015" rgba="0.6 0.6 0.6 1" mass="0.003"/>
+      <geom name="rpi" type="box" size="0.0425 0.028 0.0085" pos="0.005 0 0.043" material="pcb" mass="0.046"/>
+      <geom name="battery" type="box" size="0.05 0.025 0.01" pos="0 0 -0.015" material="battery" mass="0.12"/>
+      <geom name="pca9685" type="box" size="0.031 0.013 0.002" pos="-0.025 0 0.010" rgba="0.6 0.1 0.1 1" mass="0.008"/>
+      <site name="imu" pos="0 0 0.015" size="0.003"/>
+      <body name="head" pos="0.085 0 0.010">
+        <joint name="head_pan" type="hinge" axis="0 0 1" range="-45 45" damping="0.3"/>
+        <geom name="head_bracket" type="box" size="0.020 0.025 0.020" pos="0.015 0 0" material="acrylic" mass="0.015"/>
+        <geom name="us_L" type="cylinder" size="0.008 0.004" pos="0.035 0.012 0.008" euler="0 90 0" rgba="0.75 0.75 0.75 1" mass="0.004"/>
+        <geom name="us_R" type="cylinder" size="0.008 0.004" pos="0.035 -0.012 0.008" euler="0 90 0" rgba="0.75 0.75 0.75 1" mass="0.004"/>
+        <geom name="cam" type="box" size="0.012 0.012 0.005" pos="0.035 0 -0.008" rgba="0.1 0.3 0.1 1" mass="0.003"/>
+        <site name="rangefinder" pos="0.035 0 0.008" euler="0 90 0" size="0.003"/>
+      </body>
+      <body name="fl_hip" pos="0.068 0.038 -0.005">
+        <joint name="fl_hip_yaw" type="hinge" axis="0 0 1" range="-30 30" ref="0"/>
+        <geom name="fl_s0" type="box" size="0.0115 0.006 0.011" material="servo" mass="0.009"/>
+        <body name="fl_upper" pos="0 0.023 0">
+          <joint name="fl_hip_pitch" type="hinge" axis="0 1 0" range="-70 70" ref="-38"/>
+          <geom name="fl_s1" type="box" size="0.0115 0.006 0.011" pos="0 0.003 0" material="servo" mass="0.009"/>
+          <geom name="fl_ug" type="capsule" fromto="0 0 0 0 0 -0.055" size="0.005" material="acrylic_leg" mass="0.006"/>
+          <body name="fl_lower" pos="0 0 -0.055">
+            <joint name="fl_knee" type="hinge" axis="0 1 0" range="0 150" ref="91"/>
+            <geom name="fl_s2" type="box" size="0.0115 0.006 0.011" pos="0 0.003 0" material="servo" mass="0.009"/>
+            <geom name="fl_lg" type="capsule" fromto="0 0 0 0 0 -0.055" size="0.004" material="acrylic_leg" mass="0.005"/>
+            <geom name="FL" type="sphere" pos="0 0 -0.055" size="0.008" material="foot" mass="0.002" friction="1.0 0.5 0.01"/>
+            <site name="fl_contact" pos="0 0 -0.055" size="0.006"/>
+          </body>
+        </body>
+      </body>
+      <body name="fr_hip" pos="0.068 -0.038 -0.005">
+        <joint name="fr_hip_yaw" type="hinge" axis="0 0 1" range="-30 30" ref="0"/>
+        <geom name="fr_s0" type="box" size="0.0115 0.006 0.011" material="servo" mass="0.009"/>
+        <body name="fr_upper" pos="0 -0.023 0">
+          <joint name="fr_hip_pitch" type="hinge" axis="0 1 0" range="-70 70" ref="-38"/>
+          <geom name="fr_s1" type="box" size="0.0115 0.006 0.011" pos="0 -0.003 0" material="servo" mass="0.009"/>
+          <geom name="fr_ug" type="capsule" fromto="0 0 0 0 0 -0.055" size="0.005" material="acrylic_leg" mass="0.006"/>
+          <body name="fr_lower" pos="0 0 -0.055">
+            <joint name="fr_knee" type="hinge" axis="0 1 0" range="0 150" ref="91"/>
+            <geom name="fr_s2" type="box" size="0.0115 0.006 0.011" pos="0 -0.003 0" material="servo" mass="0.009"/>
+            <geom name="fr_lg" type="capsule" fromto="0 0 0 0 0 -0.055" size="0.004" material="acrylic_leg" mass="0.005"/>
+            <geom name="FR" type="sphere" pos="0 0 -0.055" size="0.008" material="foot" mass="0.002" friction="1.0 0.5 0.01"/>
+            <site name="fr_contact" pos="0 0 -0.055" size="0.006"/>
+          </body>
+        </body>
+      </body>
+      <body name="rl_hip" pos="-0.068 0.038 -0.005">
+        <joint name="rl_hip_yaw" type="hinge" axis="0 0 1" range="-30 30" ref="0"/>
+        <geom name="rl_s0" type="box" size="0.0115 0.006 0.011" material="servo" mass="0.009"/>
+        <body name="rl_upper" pos="0 0.023 0">
+          <joint name="rl_hip_pitch" type="hinge" axis="0 1 0" range="-70 70" ref="-38"/>
+          <geom name="rl_s1" type="box" size="0.0115 0.006 0.011" pos="0 0.003 0" material="servo" mass="0.009"/>
+          <geom name="rl_ug" type="capsule" fromto="0 0 0 0 0 -0.055" size="0.005" material="acrylic_leg" mass="0.006"/>
+          <body name="rl_lower" pos="0 0 -0.055">
+            <joint name="rl_knee" type="hinge" axis="0 1 0" range="0 150" ref="91"/>
+            <geom name="rl_s2" type="box" size="0.0115 0.006 0.011" pos="0 0.003 0" material="servo" mass="0.009"/>
+            <geom name="rl_lg" type="capsule" fromto="0 0 0 0 0 -0.055" size="0.004" material="acrylic_leg" mass="0.005"/>
+            <geom name="RL" type="sphere" pos="0 0 -0.055" size="0.008" material="foot" mass="0.002" friction="1.0 0.5 0.01"/>
+            <site name="rl_contact" pos="0 0 -0.055" size="0.006"/>
+          </body>
+        </body>
+      </body>
+      <body name="rr_hip" pos="-0.068 -0.038 -0.005">
+        <joint name="rr_hip_yaw" type="hinge" axis="0 0 1" range="-30 30" ref="0"/>
+        <geom name="rr_s0" type="box" size="0.0115 0.006 0.011" material="servo" mass="0.009"/>
+        <body name="rr_upper" pos="0 -0.023 0">
+          <joint name="rr_hip_pitch" type="hinge" axis="0 1 0" range="-70 70" ref="-38"/>
+          <geom name="rr_s1" type="box" size="0.0115 0.006 0.011" pos="0 -0.003 0" material="servo" mass="0.009"/>
+          <geom name="rr_ug" type="capsule" fromto="0 0 0 0 0 -0.055" size="0.005" material="acrylic_leg" mass="0.006"/>
+          <body name="rr_lower" pos="0 0 -0.055">
+            <joint name="rr_knee" type="hinge" axis="0 1 0" range="0 150" ref="91"/>
+            <geom name="rr_s2" type="box" size="0.0115 0.006 0.011" pos="0 -0.003 0" material="servo" mass="0.009"/>
+            <geom name="rr_lg" type="capsule" fromto="0 0 0 0 0 -0.055" size="0.004" material="acrylic_leg" mass="0.005"/>
+            <geom name="RR" type="sphere" pos="0 0 -0.055" size="0.008" material="foot" mass="0.002" friction="1.0 0.5 0.01"/>
+            <site name="rr_contact" pos="0 0 -0.055" size="0.006"/>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <position name="fl_yaw_act" joint="fl_hip_yaw" kp="3" ctrlrange="-0.524 0.524"/>
+    <position name="fl_pitch_act" joint="fl_hip_pitch" kp="3" ctrlrange="-1.222 1.222"/>
+    <position name="fl_knee_act" joint="fl_knee" kp="3" ctrlrange="0 2.618"/>
+    <position name="fr_yaw_act" joint="fr_hip_yaw" kp="3" ctrlrange="-0.524 0.524"/>
+    <position name="fr_pitch_act" joint="fr_hip_pitch" kp="3" ctrlrange="-1.222 1.222"/>
+    <position name="fr_knee_act" joint="fr_knee" kp="3" ctrlrange="0 2.618"/>
+    <position name="rl_yaw_act" joint="rl_hip_yaw" kp="3" ctrlrange="-0.524 0.524"/>
+    <position name="rl_pitch_act" joint="rl_hip_pitch" kp="3" ctrlrange="-1.222 1.222"/>
+    <position name="rl_knee_act" joint="rl_knee" kp="3" ctrlrange="0 2.618"/>
+    <position name="rr_yaw_act" joint="rr_hip_yaw" kp="3" ctrlrange="-0.524 0.524"/>
+    <position name="rr_pitch_act" joint="rr_hip_pitch" kp="3" ctrlrange="-1.222 1.222"/>
+    <position name="rr_knee_act" joint="rr_knee" kp="3" ctrlrange="0 2.618"/>
+  </actuator>
+  <sensor>
+    <accelerometer name="imu_accel" site="imu"/>
+    <gyro name="imu_gyro" site="imu"/>
+    <framequat name="body_quat" objtype="body" objname="base"/>
+    <rangefinder name="ultrasonic" site="rangefinder"/>
+    <touch name="fl_touch" site="fl_contact"/>
+    <touch name="fr_touch" site="fr_contact"/>
+    <touch name="rl_touch" site="rl_contact"/>
+    <touch name="rr_touch" site="rr_contact"/>
+    <velocimeter name="body_vel" site="imu"/>
+    <subtreecom name="com" body="base"/>
+  </sensor>
+</mujoco>
