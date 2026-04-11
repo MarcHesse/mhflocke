@@ -257,5 +257,5 @@ The Unitree Go2 model files in `creatures/go2/` are licensed under BSD-3-Clause 
 ## Contact
 
 - Website: [mhflocke.com](https://mhflocke.com)
-- Email: marc@mhflocke.com
+- Email: info@mhflocke.com
 - Reddit: [u/mhflocke](https://reddit.com/u/mhflocke)

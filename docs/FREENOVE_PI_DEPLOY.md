@@ -48,7 +48,7 @@
 #   - SSH: Enable
 #
 # After first boot:
-ssh admin@robot
+ssh <user>@<pi-hostname>
 sudo raspi-config
 #   → Interface Options → I2C → Enable
 #   → Interface Options → SSH → Enable (should already be)
@@ -120,28 +120,28 @@ sudo apt autoremove -y && sudo apt clean
 # 6. MH-FLOCKE DEPLOYMENT
 # ============================================================
 #
-# From your Windows/Mac development machine (in mhflocke-work directory):
+# From your development machine (in the mhflocke repo directory):
 #
 # Deploy src/brain/ (6 files — the unified codebase):
-ssh admin@robot "mkdir -p ~/src/brain"
-scp src/brain/__init__.py admin@robot:~/src/brain/
-scp src/brain/snn_controller.py admin@robot:~/src/brain/
-scp src/brain/cerebellar_learning.py admin@robot:~/src/brain/
-scp src/brain/multi_compartment.py admin@robot:~/src/brain/
-scp src/brain/brain_persistence.py admin@robot:~/src/brain/
-scp src/brain/topology.py admin@robot:~/src/brain/
+ssh <user>@<pi-hostname> "mkdir -p ~/src/brain"
+scp src/brain/__init__.py <user>@<pi-hostname>:~/src/brain/
+scp src/brain/snn_controller.py <user>@<pi-hostname>:~/src/brain/
+scp src/brain/cerebellar_learning.py <user>@<pi-hostname>:~/src/brain/
+scp src/brain/multi_compartment.py <user>@<pi-hostname>:~/src/brain/
+scp src/brain/brain_persistence.py <user>@<pi-hostname>:~/src/brain/
+scp src/brain/topology.py <user>@<pi-hostname>:~/src/brain/
 #
 # Deploy Bridge + Calibration:
-scp scripts/freenove_bridge.py admin@robot:~/freenove_bridge.py
-scp scripts/freenove_calibrate.py admin@robot:~/freenove_calibrate.py
+scp scripts/freenove_bridge.py <user>@<pi-hostname>:~/freenove_bridge.py
+scp scripts/freenove_calibrate.py <user>@<pi-hostname>:~/freenove_calibrate.py
 #
 # Deploy creature config (optional, for reference):
-ssh admin@robot "mkdir -p ~/creatures/freenove"
-scp creatures/freenove/profile.json admin@robot:~/creatures/freenove/
-scp creatures/freenove/servo_config.json admin@robot:~/creatures/freenove/
+ssh <user>@<pi-hostname> "mkdir -p ~/creatures/freenove"
+scp creatures/freenove/profile.json <user>@<pi-hostname>:~/creatures/freenove/
+scp creatures/freenove/servo_config.json <user>@<pi-hostname>:~/creatures/freenove/
 #
 # Verify imports:
-ssh admin@robot
+ssh <user>@<pi-hostname>
 python3 -c "
 from src.brain.snn_controller import SNNController, SNNConfig
 from src.brain.cerebellar_learning import CerebellarLearning, CerebellarConfig
@@ -201,17 +201,17 @@ python3 freenove_bridge.py --gait walk --snn --dashboard --verbose --duration 30
 # ============================================================
 #
 # Train in simulator (on Windows/Mac with MuJoCo):
-# cd D:\claude\mhflocke-work
+# cd mhflocke
 # python scripts/train_v032.py --creature-name freenove ^
 #   --scene "walk on flat meadow" --steps 50000 ^
 #   --no-terrain --no-sensory --no-vision --hardware-sensors ^
 #   --auto-reset 500 --no-llm --n-hidden 172
 #
 # Copy trained brain to Pi:
-scp creatures/freenove/brain/brain.pt admin@robot:~/brain.pt
+scp creatures/freenove/brain/brain.pt <user>@<pi-hostname>:~/brain.pt
 #
 # Run with transferred brain:
-ssh admin@robot
+ssh <user>@<pi-hostname>
 python3 freenove_bridge.py --gait walk --snn --verbose --duration 120
 #
 # The brain is in PyTorch format, identical between simulator and Pi.
@@ -255,7 +255,7 @@ python3 freenove_bridge.py --gait walk --snn --verbose --duration 120
 #   - Use Fing app (mobile) to scan the network
 #
 # SSH access:
-ssh admin@robot
+ssh <user>@<pi-hostname>
 #
 # If hostname 'robot' doesn't resolve:
 ssh admin@<IP-address>
@@ -446,10 +446,10 @@ sudo nmtui → Edit connection → IPv4 → Manual
 # python3 freenove_calibrate.py --sweep
 #
 # --- Deploy from dev machine ---
-# scp src/brain/{__init__,snn_controller,cerebellar_learning,multi_compartment,brain_persistence,topology}.py admin@robot:~/src/brain/
-# scp scripts/freenove_bridge.py admin@robot:~/freenove_bridge.py
-# scp scripts/freenove_calibrate.py admin@robot:~/freenove_calibrate.py
-# scp creatures/freenove/brain/brain.pt admin@robot:~/brain.pt
+# scp src/brain/{__init__,snn_controller,cerebellar_learning,multi_compartment,brain_persistence,topology}.py <user>@<pi-hostname>:~/src/brain/
+# scp scripts/freenove_bridge.py <user>@<pi-hostname>:~/freenove_bridge.py
+# scp scripts/freenove_calibrate.py <user>@<pi-hostname>:~/freenove_calibrate.py
+# scp creatures/freenove/brain/brain.pt <user>@<pi-hostname>:~/brain.pt
 #
 # --- Training (dev machine) ---
 # python scripts/train_v032.py --creature-name freenove --scene "walk on flat meadow" --steps 50000 --no-terrain --no-sensory --no-vision --hardware-sensors --auto-reset 500 --no-llm --n-hidden 172
@@ -464,7 +464,7 @@ sudo nmtui → Edit connection → IPv4 → Manual
 #
 # For questions about installation, hardware setup, or MH-FLOCKE:
 #
-#   Email: marc@mhflocke.com
+#   Email: info@mhflocke.com
 #
 # Resources:
 #   GitHub:  https://github.com/MarcHesse/mhflocke
