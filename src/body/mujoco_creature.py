@@ -1,7 +1,13 @@
 """
-MH-FLOCKE — MuJoCo Creature v0.4.1
+MH-FLOCKE — MuJoCo Creature v0.4.2
 ========================================
 SNN-MuJoCo bridge: population coding, sense-think-act cycle.
+
+v0.4.2: Scalable cerebellar architecture for hardware transfer.
+  - profile.json drives SNN topology (n_input, n_hidden, n_output)
+  - Cerebellar populations scale proportionally for small neuron counts
+  - Hardware-matched sensor encoding (--hardware-sensors flag)
+  - Freenove 232 neurons runs full 15-step cognitive loop
 """
 
 import torch
@@ -63,6 +69,131 @@ def decode_motor_spikes(spike_counts: torch.Tensor, n_per_joint: int,
 
 
 # ================================================================
+# HARDWARE-MATCHED SENSOR ENCODING (Freenove Bridge v2.5 compatible)
+# ================================================================
+
+# Reference angles from MJCF (degrees) — joint rest positions
+# Order: FL(yaw,pitch,knee), FR(yaw,pitch,knee), RL(yaw,pitch,knee), RR(yaw,pitch,knee)
+_MJCF_REF_DEG = [0, -38, 91, 0, -38, 91, 0, -38, 91, 0, -38, 91]
+
+# Leg types: which legs are left-side, which are right-side
+# Left legs (FL, RL): servo_pitch = 90 - abs_pitch, servo_knee = abs_knee
+# Right legs (FR, RR): servo_pitch = 90 + abs_pitch, servo_knee = 180 - abs_knee
+_LEG_IS_LEFT = [True, False, True, False]  # FL, FR, RL, RR
+
+
+def qpos_to_servo_normalized(joint_angles_rad):
+    """
+    Convert MuJoCo joint angles (radians, relative to ref) to
+    normalized servo values (0-1) matching Bridge encode_sensory().
+    
+    MuJoCo qpos = 0 means the joint is at its ref angle.
+    Bridge normalizes absolute servo degrees / 180.
+    """
+    servo_norm = np.zeros(12, dtype=np.float32)
+    
+    for leg_idx in range(4):
+        is_left = _LEG_IS_LEFT[leg_idx]
+        base = leg_idx * 3
+        
+        # Absolute angles = ref + qpos (qpos in radians -> degrees)
+        yaw_abs = _MJCF_REF_DEG[base + 0] + np.degrees(joint_angles_rad[base + 0])
+        pitch_abs = _MJCF_REF_DEG[base + 1] + np.degrees(joint_angles_rad[base + 1])
+        knee_abs = _MJCF_REF_DEG[base + 2] + np.degrees(joint_angles_rad[base + 2])
+        
+        if is_left:
+            servo_yaw = yaw_abs + 90       # ~90 at standing
+            servo_pitch = 90 - pitch_abs   # ~128 at standing
+            servo_knee = knee_abs          # ~91 at standing
+        else:
+            servo_yaw = 90 - yaw_abs       # ~90 at standing
+            servo_pitch = 90 + pitch_abs   # ~52 at standing
+            servo_knee = 180 - knee_abs    # ~89 at standing
+        
+        servo_norm[base + 0] = np.clip(servo_yaw, 0, 180) / 180.0
+        servo_norm[base + 1] = np.clip(servo_pitch, 0, 180) / 180.0
+        servo_norm[base + 2] = np.clip(servo_knee, 0, 180) / 180.0
+    
+    return servo_norm
+
+
+def encode_sensory_hardware_matched(joint_angles_rad, cpg_phase, imu_data):
+    """
+    Encode sensor data in the EXACT same format as the Pi Bridge v2.5.
+    
+    Layout (48 channels, matches freenove_bridge.py encode_sensory()):
+      Channels  0-11: 12 joint angles (servo positions, normalized /180)
+      Channels 12-13:  2 CPG phase (sin, cos)
+      Channels 14-17:  4 IMU (pitch/90, roll/90, yaw/180, upright)
+      Channels 18-47: 30 zeros (padding to 48)
+    
+    NO position, NO velocity, NO height, NO forward_velocity,
+    NO joint_velocities, NO visual channels — the real robot
+    doesn't have those sensors.
+    
+    Args:
+        joint_angles_rad: 12 joint angles in radians from MuJoCo (relative to ref)
+        cpg_phase: [sin(phase), cos(phase)] from CPG
+        imu_data: dict with pitch, roll, yaw (degrees), upright (0-1)
+    
+    Returns:
+        np.array of 48 float32 values
+    """
+    s = np.zeros(48, dtype=np.float32)
+    
+    # Channels 0-11: Servo angles normalized to [0,1]
+    s[:12] = qpos_to_servo_normalized(joint_angles_rad)
+    
+    # Channels 12-13: CPG phase
+    s[12:14] = cpg_phase
+    
+    # Channels 14-17: IMU (matches Bridge v2.5 exactly)
+    s[14] = imu_data['pitch'] / 90.0 * 0.5 + 0.5   # [-90,90] -> [0,1]
+    s[15] = imu_data['roll'] / 90.0 * 0.5 + 0.5
+    s[16] = imu_data['yaw'] / 180.0 * 0.5 + 0.5     # [-180,180] -> [0,1]
+    s[17] = imu_data['upright']                       # [0,1]
+    
+    # Channels 18-47: zeros (padding, matches Bridge)
+    return s
+
+
+def extract_imu_from_mujoco(qpos):
+    """
+    Extract IMU-equivalent data from MuJoCo qpos quaternion.
+    
+    Args:
+        qpos: MuJoCo qpos array (at least 7 elements: 3 pos + 4 quat)
+    
+    Returns:
+        dict with pitch, roll, yaw (degrees), upright (0-1)
+    """
+    import math
+    w, x, y, z = qpos[3:7]
+    
+    # Quaternion to euler
+    sinr_cosp = 2 * (w * x + y * z)
+    cosr_cosp = 1 - 2 * (x * x + y * y)
+    roll = np.degrees(np.arctan2(sinr_cosp, cosr_cosp))
+    
+    sinp = np.clip(2 * (w * y - z * x), -1.0, 1.0)
+    pitch = np.degrees(np.arcsin(sinp))
+    
+    siny_cosp = 2 * (w * z + x * y)
+    cosy_cosp = 1 - 2 * (y * y + z * z)
+    yaw = np.degrees(np.arctan2(siny_cosp, cosy_cosp))
+    
+    tilt = math.sqrt(float(pitch)**2 + float(roll)**2)
+    upright = max(0.0, 1.0 - tilt / 45.0)
+    
+    return {
+        'pitch': float(pitch),
+        'roll': float(roll),
+        'yaw': float(yaw),
+        'upright': float(upright),
+    }
+
+
+# ================================================================
 # MUJOCO CREATURE
 # ================================================================
 
@@ -108,6 +239,10 @@ class MuJoCoCreature:
             pg = PlasticityGenome(**genome.plasticity_genome)
             self.plasticity_rule = EvolvedPlasticityRule(pg)
 
+        # Hardware-matched sensor mode (set by builder)
+        self._hardware_sensors = False
+        self._hardware_n_input = 48  # default Freenove channel count
+
         # Sensor/Motor Dimensionen
         self._n_sensor_channels = self._count_sensor_channels()
         self._n_motors = world.n_actuators if hasattr(world, '_model') and world._model else genome.n_joints
@@ -127,14 +262,13 @@ class MuJoCoCreature:
 
     def _count_sensor_channels(self) -> int:
         """Zaehle Sensor-Kanaele aus MuJoCo Sensor-Data."""
-        # Feste Kanaele: position(3) + velocity(3) + orientation(3) + 
+        # In hardware-matched mode, channel count comes from profile
+        if self._hardware_sensors:
+            return self._hardware_n_input
+        # Standard mode: position(3) + velocity(3) + orientation(3) + 
         #               height(1) + upright(1) + forward_vel(1) +
         #               joint_angles(n) + joint_velocities(n) +
         #               visual_target_heading(1) + visual_target_distance(1)
-        # n_joints from MuJoCo (actuators), not from genome
-        # Vision channels (Issue #76d): The creature can SEE a target object.
-        # These 2 channels encode direction and distance to the visual target,
-        # like a dog's visual cortex projecting to motor areas.
         if hasattr(self.world, '_model') and self.world._model:
             n_joints = self.world.n_actuators
         else:
@@ -152,6 +286,8 @@ class MuJoCoCreature:
 
     def _extract_raw_sensors(self, data: dict) -> list:
         """Extrahiert rohe Sensor-Werte fuer CognitiveBrain."""
+        if self._hardware_sensors:
+            return self._extract_raw_sensors_hardware(data)
         values = []
         pos = data.get('position', np.zeros(3))
         values.extend([pos[0] / 10, pos[1] / 10, pos[2] / 10])
@@ -171,6 +307,27 @@ class MuJoCoCreature:
         values.append(getattr(self, '_visual_target_distance', 0.0))
         return values
 
+    def _extract_raw_sensors_hardware(self, data: dict) -> list:
+        """Extract raw sensor values in hardware-matched layout for CognitiveBrain."""
+        # Use the same 48-channel layout as the Pi Bridge
+        n_act = self.world.n_actuators if hasattr(self.world, '_model') else 12
+        joint_angles_rad = self.world._data.qpos[7:7+n_act] if hasattr(self.world, '_data') else np.zeros(n_act)
+        
+        # CPG phase from creature state
+        cpg_cmd = getattr(self, '_cpg_cmd', None)
+        if cpg_cmd is not None:
+            # Reconstruct phase from CPG command pattern (approximate)
+            import math
+            cpg_phase_val = getattr(self, '_cpg_phase_input', np.array([0.0, 1.0]))
+        else:
+            cpg_phase_val = np.array([0.0, 1.0])
+        
+        # IMU from MuJoCo quaternion
+        imu_data = extract_imu_from_mujoco(self.world._data.qpos)
+        
+        sensory = encode_sensory_hardware_matched(joint_angles_rad, cpg_phase_val, imu_data)
+        return sensory.tolist()
+
     # ================================================================
     # SENSE
     # ================================================================
@@ -179,9 +336,14 @@ class MuJoCoCreature:
         """
         MuJoCo Sensoren -> SNN Input Tensor.
         
-        Verwendet Population Coding: jeder Sensor-Wert wird durch
-        NEURONS_PER_SENSOR Neuronen mit Gaussianischen Tuning Curves encodiert.
+        In hardware-matched mode: uses encode_sensory_hardware_matched()
+        to produce the exact same 48-channel layout as the Pi Bridge.
+        
+        In standard mode: uses Population Coding with Gaussian Tuning Curves.
         """
+        if self._hardware_sensors:
+            return self._get_sensor_input_hardware()
+        
         data = self.world.get_sensor_data(self.body_name)
         
         # Build sensor vector (all normalized to ~-1..1)
@@ -219,11 +381,6 @@ class MuJoCoCreature:
             sensor_values.append(np.clip(v / 10.0, -1, 1))
 
         # --- Vision channels (Issue #76d): Target object direction + distance ---
-        # Biology: Visual cortex (V1->MT->FEF) projects target location to
-        # premotor cortex. The dog SEES the ball and knows where it is.
-        # 2 channels: heading (-1=far left, +1=far right), distance (0=far, 1=touching)
-        # These are population-coded like all other sensors = 16 new input neurons.
-        # The SNN learns via R-STDP: "heading>0 + approach_reward -> turn right"
         _vis_heading = getattr(self, '_visual_target_heading', 0.0)
         _vis_distance = getattr(self, '_visual_target_distance', 0.0)
         sensor_values.append(np.clip(_vis_heading, -1.0, 1.0))
@@ -251,10 +408,58 @@ class MuJoCoCreature:
             hidden_ids = self.snn.populations['hidden']
             snn_input[hidden_ids] += tonic
 
-        # Teil A (asymmetric input current) REMOVED — replaced by dedicated
-        # vision sensor channels above (target_heading + target_distance).
-        # The SNN now has proper "eyes" instead of a crude current bias.
+        return snn_input
 
+    def _get_sensor_input_hardware(self) -> torch.Tensor:
+        """
+        Hardware-matched sensor encoding for Freenove.
+        
+        Uses encode_sensory_hardware_matched() to produce the EXACT same
+        48-channel layout as freenove_bridge.py. The 48 raw values are
+        then population-coded into n_input SNN neurons.
+        
+        This ensures that a brain trained in simulation can be directly
+        transferred to the Raspberry Pi without sensor mismatch.
+        """
+        n_act = self.world.n_actuators if hasattr(self.world, '_model') else 12
+        joint_angles_rad = self.world._data.qpos[7:7+n_act] if hasattr(self.world, '_data') else np.zeros(n_act)
+        
+        # CPG phase input (stored by training loop)
+        cpg_phase_val = getattr(self, '_cpg_phase_input', np.array([0.0, 1.0], dtype=np.float32))
+        
+        # IMU from MuJoCo quaternion
+        imu_data = extract_imu_from_mujoco(self.world._data.qpos)
+        
+        # Encode in Bridge-identical format
+        sensory = encode_sensory_hardware_matched(joint_angles_rad, cpg_phase_val, imu_data)
+        
+        # Population Coding: 48 values -> n_input SNN neurons
+        n = self.snn.config.n_neurons
+        snn_input = torch.zeros(n, device=self.snn.device, dtype=self.snn.dtype)
+        
+        threshold = self.snn.config.v_threshold
+        n_input = len(self.snn.populations.get('input', []))
+        neurons_per_channel = max(1, n_input // len(sensory)) if n_input > 0 else 1
+        
+        idx = 0
+        for val in sensory:
+            encoded = rate_encode(float(val), neurons_per_channel,
+                                  min_val=0.0, max_val=1.0,  # Hardware values are 0-1
+                                  gain=threshold * 2.0)
+            end = min(idx + neurons_per_channel, n_input, n)
+            actual_len = end - idx
+            if actual_len > 0:
+                snn_input[idx:end] = encoded[:actual_len]
+            idx = end
+            if idx >= n:
+                break
+        
+        # Tonic current on hidden neurons
+        tonic = getattr(self.snn, '_hidden_tonic_current', 0.02)
+        if tonic > 0 and 'hidden' in self.snn.populations:
+            hidden_ids = self.snn.populations['hidden']
+            snn_input[hidden_ids] += tonic
+        
         return snn_input
 
     # ================================================================
@@ -278,7 +483,6 @@ class MuJoCoCreature:
                                           dtype=self.snn.dtype)
 
         # Accumulate GrC spikes across substeps for cerebellar learning
-        # (snn.spikes only holds the LAST substep)
         n = self.snn.config.n_neurons
         self._accumulated_spikes = torch.zeros(n, device=self.snn.device,
                                                 dtype=self.snn.dtype)
@@ -316,7 +520,6 @@ class MuJoCoCreature:
             cpg_base = self._cpg_base
 
             if self.actor_critic is not None:
-                # Vestibular gate: pass upright to cerebellum (Issue #68)
                 _quat = self.world._data.qpos[3:7]
                 _up = max(0, 1.0 - 2.0 * (_quat[1]**2 + _quat[2]**2))
                 compute_fn = getattr(self.actor_critic, 'compute_corrections',
@@ -332,9 +535,6 @@ class MuJoCoCreature:
             else:
                 controls = list(np.clip(cpg_base, -1.0, 1.0))
         elif self.actor_critic is not None:
-            # NEW MODE: Pure SNN via cerebellum (v0.3.1)
-            # No CPG base -- cerebellum DCN output IS the motor command.
-            # compute_corrections() uses pure_mode internally for [-1,1] range.
             _quat2 = self.world._data.qpos[3:7]
             _up2 = max(0, 1.0 - 2.0 * (_quat2[1]**2 + _quat2[2]**2))
             try:
@@ -343,10 +543,9 @@ class MuJoCoCreature:
                 corrections = self.actor_critic.compute_corrections(snn_controls)
             controls = list(np.clip(corrections, -1.0, 1.0))
         else:
-            # Fallback: raw SNN spike decoding (no cerebellum)
             controls = snn_controls
 
-        # Scale cerebellum/SNN output (morphology needs fine control)
+        # Scale cerebellum/SNN output
         per_joint_scale = getattr(self, 'per_joint_scale', None)
         motor_scale = getattr(self, 'motor_scale', 1.0)
         if per_joint_scale is not None:
@@ -355,7 +554,6 @@ class MuJoCoCreature:
             controls = [c * motor_scale for c in controls]
 
         # Blend with spinal CPG (innate rhythmic pattern)
-        # Motor = CPG * cpg_weight + Cerebellum * (1 - cpg_weight) + Reflexes
         cpg_cmd = getattr(self, '_cpg_cmd', None)
         cpg_weight = getattr(self, '_cpg_weight', 0.0)
         if cpg_cmd is not None and cpg_weight > 0:
@@ -368,16 +566,12 @@ class MuJoCoCreature:
             reflex_scale = getattr(self, 'reflex_scale', 1.0)
             controls = [c + r * reflex_scale for c, r in zip(controls, reflex_cmd)]
 
-        # Terrain reflex: proprioceptive slope/contact corrections (Phase B ATR)
-        # Added AFTER CPG+cerebellum+reflexes, BEFORE spinal segments
+        # Terrain reflex corrections (Phase B ATR)
         terrain_corr = getattr(self, '_terrain_corr', None)
         if terrain_corr is not None:
             controls = [c + t for c, t in zip(controls, terrain_corr)]
 
         # Spinal segments: muscle tone + stretch reflex + Golgi tendon organ
-        # This is the LAST biological layer before the muscles.
-        # Tone keeps joints from collapsing, stretch reflex resists
-        # perturbations, Golgi limits excessive force.
         spinal_seg = getattr(self, '_spinal_segments', None)
         if spinal_seg is not None:
             joint_pos = self.world._data.qpos[7:7+n_act] if hasattr(self.world, '_data') else np.zeros(n_act)
@@ -388,33 +582,21 @@ class MuJoCoCreature:
         else:
             controls = [np.clip(c, -1.0, 1.0) for c in controls]
 
-        # Teil B motor-hack steering REMOVED — steering now happens inside
-        # the CPG itself via asymmetric per-leg amplitude (spinal_cpg.compute(
-        # steering=...)). This is biologically correct: Reticulospinal neurons
-        # modulate left/right CPG half-centers, not post-hoc motor offsets.
-        # Ref: Grillner 2003 (lamprey turning via asymmetric CPG)
-
         self.world.set_controls(np.array(controls))
         self._last_controls = controls
         self._energy_spent += sum(abs(c) for c in controls)
 
         # PD Controller hook: convert position targets -> torques
-        # For torque-actuated robots (Go2), the CPG/SNN output +/-1.0
-        # must be interpreted as joint angle offsets, not raw torques.
         pd = getattr(self, '_pd_controller', None)
         if pd is not None:
             n = self.world.n_actuators
             raw_ctrl = self.world._data.ctrl[:n].copy()
             standing = pd['standing']
-            # Dynamic scale: fine control when upright, full range when fallen
-            # Biology: muscle co-activation increases with arousal/panic.
-            # A fallen animal thrashes with maximum range to right itself.
             base_scale = pd.get('scale', 0.4)
             fallen_scale = pd.get('fallen_scale', 1.5)
             _quat = self.world._data.qpos[3:7]
             _upright = max(-1, min(1, 1.0 - 2.0 * (_quat[1]**2 + _quat[2]**2)))
-            # Smooth transition: upright(1.0) -> base_scale, fallen(-1.0) -> fallen_scale
-            _urgency = max(0.0, min(1.0, (1.0 - _upright) / 2.0))  # 0=upright, 1=inverted
+            _urgency = max(0.0, min(1.0, (1.0 - _upright) / 2.0))
             scale = base_scale + (fallen_scale - base_scale) * _urgency
             target_q = standing + raw_ctrl * scale
             current_q = self.world._data.qpos[7:7+n]
@@ -431,22 +613,11 @@ class MuJoCoCreature:
              extra_sensor_data: Optional[Dict] = None) -> dict:
         """
         Vollstaendiger Sense-Think-Act Zyklus.
-        
-        Args:
-            reward_signal: Reward fuer R-STDP Lernen
-            extra_sensor_data: Optional dict with enriched sensor data from
-                training loop (smell_strength, scent_reward, etc.) that is
-                not available in raw MuJoCo sensors. Passed through to
-                CognitiveBrain.process() for Drive computation.
-            
-        Returns:
-            dict mit Step-Info (spikes, controls, etc.)
         """
-        # Startposition bei erstem Step setzen
         if self._start_position is None:
             self._init_start_pos()
 
-        # 1. Sense (raw sensor values for CognitiveBrain)
+        # 1. Sense
         sensor_data = {}
         try:
             sensor_data = self.world.get_sensor_data(self.body_name)
@@ -466,16 +637,8 @@ class MuJoCoCreature:
         self.world.step()
 
         # 6. Cognitive cycle
-        #    When cerebellar learning is active, we enable CognitiveBrain
-        #    but protect the SNN from weight modifications that would
-        #    interfere with cerebellar learning.
-        #    Protected: R-STDP, Hebbian, GWT broadcast to hidden, 
-        #               Synaptogenesis apical injection
-        #    Active: Emotions, Drives, Memory, Body Schema, World Model,
-        #            Metacognition, Consistency, Dream recording
         brain_result = {}
         if self.brain:
-            # When cerebellar learning is active, disable SNN weight mods
             if self.actor_critic is not None:
                 self.brain.protect_snn_weights = True
             else:
@@ -510,7 +673,6 @@ class MuJoCoCreature:
     # ================================================================
 
     def get_position(self) -> np.ndarray:
-        """Aktuelle Position des Root-Body."""
         try:
             data = self.world.get_sensor_data(self.body_name)
             return data['position'].copy()
@@ -518,21 +680,17 @@ class MuJoCoCreature:
             return np.zeros(3)
 
     def get_distance_traveled(self) -> float:
-        """Horizontale Distanz vom Startpunkt (XY-Ebene)."""
         if self._start_position is None:
             return 0.0
         pos = self.get_position()
         diff = pos - self._start_position
-        return float(np.sqrt(diff[0]**2 + diff[1]**2))  # XY-Ebene (MuJoCo: Z=up)
+        return float(np.sqrt(diff[0]**2 + diff[1]**2))
 
     def is_fallen(self) -> bool:
-        """Kreatur umgefallen? (Height unter Threshold oder nicht aufrecht)."""
         try:
-            # Read directly from qpos (reliable, no sensor needed)
             height = float(self.world._data.qpos[2])
             qw, qx, qy, qz = self.world._data.qpos[3:7]
             upright = max(0, 1.0 - 2.0 * (qx*qx + qy*qy))
-            # Height threshold accounts for motor_scale reducing standing height
             h_thresh = getattr(self, '_fallen_height_threshold', 0.08)
             return height < h_thresh or upright < 0.3
         except Exception:
@@ -542,7 +700,6 @@ class MuJoCoCreature:
         return self._energy_spent
 
     def get_state(self) -> dict:
-        """Kompletter Zustand fuer Logging."""
         try:
             data = self.world.get_sensor_data(self.body_name)
         except Exception:
@@ -563,7 +720,6 @@ class MuJoCoCreature:
         }
 
     def apply_reward(self, reward: float):
-        """Reward -> R-STDP + Neuromodulator-Anpassung."""
         self.snn.apply_rstdp(reward_signal=reward)
         if reward > 0:
             self.snn.set_neuromodulator('ne', min(0.8, 0.3 + reward * 0.3))
@@ -571,7 +727,6 @@ class MuJoCoCreature:
             self.snn.set_neuromodulator('5ht', min(0.8, 0.5 + abs(reward) * 0.2))
 
     def reset(self):
-        """State zuruecksetzen (SNN bleibt, Physik wird resettet)."""
         self.world.reset()
         self._step_count = 0
         self._energy_spent = 0.0
@@ -581,11 +736,55 @@ class MuJoCoCreature:
 
 
 # ================================================================
-# BUILDER
+# BUILDER — Scalable Cerebellar Architecture
 # ================================================================
 
 class MuJoCoCreatureBuilder:
     """Factory: Genome -> MuJoCoCreature (komplett verdrahtet)."""
+
+    @staticmethod
+    def _compute_cerebellar_populations(n_hidden: int, n_actuators: int):
+        """
+        Compute cerebellar population sizes scaled to available hidden neurons.
+        
+        For large networks (n_hidden >= 500): use standard sizes (GrC=4000, GoC=200).
+        For small networks (n_hidden < 500): scale proportionally.
+        
+        The architecture is preserved — just smaller. Like a mouse cerebellum
+        vs an elephant cerebellum: same cell types, same connectivity, different scale.
+        
+        Returns:
+            dict with population sizes: n_granule, n_golgi, n_purkinje, n_dcn
+        """
+        n_purkinje = n_actuators * 2  # 2 per actuator (push/pull)
+        n_dcn = n_actuators * 2       # same as PkC
+        
+        if n_hidden >= 500:
+            # Standard: large cerebellum (Go2, Bommel)
+            return {
+                'n_granule': 4000,
+                'n_golgi': 200,
+                'n_purkinje': n_purkinje,
+                'n_dcn': n_dcn,
+            }
+        
+        # Scaled: small cerebellum (Freenove, micro robots)
+        # Reserve space for PkC + DCN first, rest goes to GrC + GoC
+        fixed_neurons = n_purkinje + n_dcn  # e.g. 24 + 24 = 48 for 12 actuators
+        available = max(4, n_hidden - fixed_neurons)
+        
+        # Split available: 80% GrC (expansion), 20% GoC (inhibition)
+        # Biology: GrC:GoC ratio is ~400:1 in real cerebellum,
+        # but GoC needs minimum viable count for inhibitory feedback.
+        n_golgi = max(4, int(available * 0.15))
+        n_granule = max(4, available - n_golgi)
+        
+        return {
+            'n_granule': n_granule,
+            'n_golgi': n_golgi,
+            'n_purkinje': n_purkinje,
+            'n_dcn': n_dcn,
+        }
 
     @staticmethod
     def build(genome: Genome, world=None,
@@ -593,7 +792,10 @@ class MuJoCoCreatureBuilder:
               device: str = 'cpu',
               creature_name: str = 'creature',
               xml_path: str = None,
-              xml_string: str = None) -> 'MuJoCoCreature':
+              xml_string: str = None,
+              hardware_sensors: bool = False,
+              no_vision: bool = False,
+              profile: dict = None) -> 'MuJoCoCreature':
         """
         Baut eine MuJoCo-Kreatur aus Genome (oder fertigem XML).
         
@@ -603,9 +805,12 @@ class MuJoCoCreatureBuilder:
             n_hidden_neurons: Anzahl Hidden-Neuronen im SNN
             device: 'cpu' oder 'cuda'
             creature_name: Name-Prefix
-            xml_path: Pfad zu fertigem MJCF XML (Mesh-Modell).
-                      Wenn angegeben, wird das XML direkt geladen
-                      statt aus dem Genome generiert.
+            xml_path: Pfad zu fertigem MJCF XML
+            xml_string: XML as string
+            hardware_sensors: Use hardware-matched sensor encoding (Bridge v2.5 layout)
+            no_vision: Disable visual heading/distance channels
+            profile: Creature profile dict (from profile.json). If provided,
+                     overrides n_hidden_neurons with profile['snn']['n_hidden'].
             
         Returns:
             MuJoCoCreature mit verdrahtetem SNN
@@ -613,13 +818,19 @@ class MuJoCoCreatureBuilder:
         from src.body.mujoco_world import MuJoCoWorld
         from src.body.mjcf_generator import MJCFGenerator
 
+        # --- Profile-driven topology ---
+        snn_profile = profile.get('snn', {}) if profile else {}
+        if snn_profile.get('n_hidden') is not None:
+            n_hidden_neurons = snn_profile['n_hidden']
+        profile_n_input = snn_profile.get('n_input', None)
+        profile_n_output = snn_profile.get('n_output', None)
+
         # 1. MuJoCo Welt
         if world is None:
             world = MuJoCoWorld(render=False)
 
-        # 2. Load MJCF: either existing file or generated from genome
+        # 2. Load MJCF
         if xml_string:
-            # Szenen-XML direkt laden (SceneBuilder hat MJCF schon kombiniert)
             world.load_from_xml_string(xml_string)
         elif xml_path:
             import os
@@ -631,34 +842,41 @@ class MuJoCoCreatureBuilder:
             world.load_creature_xml(body_xml, act_xml, sens_xml)
             world._build()
 
-        # 3. SNN dimensionieren -- Cerebellar Architecture v0.3.0
-        # Based on Marr-Albus theory and Shinji et al. 2024
+        # 3. SNN dimensionieren — Scalable Cerebellar Architecture v0.4.2
         #
-        # Layout:  MF(input) -> GrC -> PkC -> DCN(output)
-        #           \-> GoC <--/ (feedback inhibition for sparseness)
-        #
-        # Old layout was: input -> relay -> hidden -> output (unstructured)
-        # New layout has functional populations with biological roles.
-        #
-        # Sensor-Channels aus MuJoCo (+2 vision channels: target heading + distance)
-        n_sensor_channels = 12 + 2 * world.n_actuators + 2  # +2 = vision (Issue #76d)
-        n_input = n_sensor_channels * MuJoCoCreature.NEURONS_PER_SENSOR
+        # Profile-driven: if profile.json has snn.n_input, use that.
+        # Hardware-matched: if --hardware-sensors, use 48 raw channels.
+        # Standard: compute from MuJoCo sensor channels + population coding.
+        
+        if hardware_sensors and profile_n_input is not None:
+            # Hardware mode: n_input from profile (e.g. 48 for Freenove)
+            n_input = profile_n_input
+            n_sensor_channels = n_input  # 1:1, no population coding expansion
+        elif profile_n_input is not None and n_hidden_neurons < 500:
+            # Small robot with profile: trust profile n_input
+            n_input = profile_n_input
+            n_sensor_channels = n_input
+        else:
+            # Standard: compute sensor channels from MuJoCo
+            n_vision = 0 if no_vision else 2
+            n_sensor_channels = 12 + 2 * world.n_actuators + n_vision
+            n_input = n_sensor_channels * MuJoCoCreature.NEURONS_PER_SENSOR
 
-        # Cerebellar population sizes
-        from src.brain.cerebellar_learning import CerebellarConfig
-        cb_cfg = CerebellarConfig()
-        n_granule = cb_cfg.n_granule    # 4000 GrC (expansion layer)
-        n_golgi = cb_cfg.n_golgi        # 200 GoC (inhibitory)
-        # PkC/DCN = 2 per actuator (push/pull), auto-sized to morphology
-        n_purkinje = world.n_actuators * 2  # e.g. 16 actuators -> 32 PkC
-        n_dcn = world.n_actuators * 2       # same as PkC
-        cb_cfg.n_purkinje = n_purkinje
-        cb_cfg.n_dcn = n_dcn
+        # Output neurons
+        if profile_n_output is not None:
+            n_output = profile_n_output
+        else:
+            n_output = world.n_actuators * MuJoCoCreature.NEURONS_PER_MOTOR
 
-        # Legacy output neurons (kept for compatibility with think()/decode)
-        n_output = world.n_actuators * MuJoCoCreature.NEURONS_PER_MOTOR
+        # Cerebellar populations scaled to n_hidden
+        cb_pops = MuJoCoCreatureBuilder._compute_cerebellar_populations(
+            n_hidden_neurons, world.n_actuators)
+        n_granule = cb_pops['n_granule']
+        n_golgi = cb_pops['n_golgi']
+        n_purkinje = cb_pops['n_purkinje']
+        n_dcn = cb_pops['n_dcn']
 
-        # Total: MF + Output(legacy) + GrC + GoC + PkC + DCN
+        # Total neuron count
         total_neurons = n_input + n_output + n_granule + n_golgi + n_purkinje + n_dcn
 
         # Neuron ID ranges
@@ -666,6 +884,30 @@ class MuJoCoCreatureBuilder:
         goc_start = grc_start + n_granule
         pkc_start = goc_start + n_golgi
         dcn_start = pkc_start + n_purkinje
+
+        print(f'  SNN Topology: {total_neurons} neurons '
+              f'({n_input}i + {n_output}o + {n_granule}GrC + {n_golgi}GoC + '
+              f'{n_purkinje}PkC + {n_dcn}DCN)')
+        if hardware_sensors:
+            print(f'  Sensor mode: HARDWARE-MATCHED (Bridge v2.5 layout, {n_input} channels)')
+        if n_hidden_neurons < 500:
+            print(f'  Scaled cerebellum: {n_hidden_neurons} hidden neurons '
+                  f'(GrC:{n_granule} GoC:{n_golgi} PkC:{n_purkinje} DCN:{n_dcn})')
+
+        # Update CerebellarConfig with scaled values
+        from src.brain.cerebellar_learning import CerebellarConfig
+        cb_cfg = CerebellarConfig()
+        cb_cfg.n_granule = n_granule
+        cb_cfg.n_golgi = n_golgi
+        cb_cfg.n_purkinje = n_purkinje
+        cb_cfg.n_dcn = n_dcn
+        # Scale connectivity for small networks
+        if n_hidden_neurons < 500:
+            # With fewer GrC, increase connectivity to maintain information flow
+            cb_cfg.grc_goc_prob = min(0.3, 0.05 * (4000 / max(n_granule, 1)))
+            cb_cfg.pf_pkc_prob = min(0.8, 0.4 * (4000 / max(n_granule, 1)))
+            # Fewer MF per GrC for very small networks
+            cb_cfg.mf_per_granule = min(4, max(2, n_input // max(n_granule, 1)))
 
         # 4. SNN Controller
         snn = SNNController(SNNConfig(
@@ -675,43 +917,34 @@ class MuJoCoCreatureBuilder:
             device=device,
         ))
 
-        # === Populations -- Cerebellar Architecture ===
-        # Mossy fibers = input population (sensor encoding)
+        # === Populations — Cerebellar Architecture ===
         mf_ids = torch.arange(0, n_input)
-        snn.define_population('input', mf_ids)           # compat name
-        snn.define_population('mossy_fibers', mf_ids)     # cerebellar name
+        snn.define_population('input', mf_ids)
+        snn.define_population('mossy_fibers', mf_ids)
 
-        # Legacy output (still used by think()/decode_motor_spikes)
         out_ids = torch.arange(n_input, n_input + n_output)
         snn.define_population('output', out_ids)
 
-        # Granule cells -- expansion layer, sparse coding
         grc_ids = torch.arange(grc_start, grc_start + n_granule)
         snn.define_population('granule_cells', grc_ids)
-        snn.define_population('hidden', grc_ids)  # compat: cognitive_brain uses 'hidden'
+        snn.define_population('hidden', grc_ids)
 
-        # Golgi cells -- inhibitory feedback on GrC
         goc_ids = torch.arange(goc_start, goc_start + n_golgi)
         snn.define_population('golgi_cells', goc_ids)
 
-        # Purkinje cells -- cerebellar output, learns via LTD
         pkc_ids = torch.arange(pkc_start, pkc_start + n_purkinje)
         snn.define_population('purkinje_cells', pkc_ids)
 
-        # Deep Cerebellar Nuclei -- motor correction output
         dcn_ids = torch.arange(dcn_start, dcn_start + n_dcn)
         snn.define_population('dcn', dcn_ids)
 
-        # === Connectivity -- Biologically structured ===
-
-        # MF -> GrC: each GrC receives exactly 4 MF inputs (biology: 4 dendrites)
-        # Using structured sparse connectivity instead of random probability
+        # === Connectivity — Biologically structured ===
+        # MF -> GrC: each GrC receives mf_per_granule MF inputs
         n_mf = len(mf_ids)
         mf_per_grc = cb_cfg.mf_per_granule
         src_list = []
         tgt_list = []
         for g in range(n_granule):
-            # Each GrC samples 4 random MF inputs
             mf_choices = torch.randint(0, n_mf, (mf_per_grc,))
             for m in mf_choices:
                 src_list.append(mf_ids[m].item())
@@ -719,31 +952,30 @@ class MuJoCoCreatureBuilder:
         if src_list:
             src_t = torch.tensor(src_list, device=device)
             tgt_t = torch.tensor(tgt_list, device=device)
-            w = torch.rand(len(src_list), device=device) * 1.0 + 1.0  # [1.0, 2.0]
+            w = torch.rand(len(src_list), device=device) * 1.0 + 1.0
             new_idx = torch.stack([src_t, tgt_t])
             snn._weight_indices = new_idx
             snn._weight_values = w
             snn._eligibility = torch.zeros(len(src_list), device=device)
 
-        # GrC -> GoC: excitatory feedback (GoC monitors GrC activity)
+        # GrC -> GoC
         snn.connect_populations('granule_cells', 'golgi_cells',
                                 prob=cb_cfg.grc_goc_prob, weight_range=(0.3, 0.8))
 
-        # GoC -> GrC: INHIBITORY feedback (enforces sparseness)
-        # Mark GoC neurons as inhibitory
-        snn.neuron_types[goc_ids] = -1.0  # inhibitory
+        # GoC -> GrC (inhibitory)
+        snn.neuron_types[goc_ids] = -1.0
         snn.connect_populations('golgi_cells', 'granule_cells',
                                 prob=0.02, weight_range=(0.2, 0.4))
 
-        # MF -> GoC: direct excitation (GoC also receives sensory input)
+        # MF -> GoC
         snn.connect_populations('mossy_fibers', 'golgi_cells',
                                 prob=0.1, weight_range=(0.5, 1.0))
 
-        # GrC -> legacy output: keep some direct path for SNN motor output
+        # GrC -> legacy output
         snn.connect_populations('granule_cells', 'output',
                                 prob=0.02, weight_range=(0.3, 0.8))
 
-        # === Per-population membrane time constants (tau_mem) ===
+        # === Per-population membrane time constants ===
         snn._tau_base[grc_ids] = 5.0
         snn._tau_base[goc_ids] = 20.0
         snn._tau_base[pkc_ids] = 15.0
@@ -763,7 +995,16 @@ class MuJoCoCreatureBuilder:
         body_name = f"{creature_name}_s0"
         creature = MuJoCoCreature(genome, snn, world, body_name, creature_name)
 
-        # 6. Cognitive Brain aufsetzen
+        # Set hardware sensor mode
+        creature._hardware_sensors = hardware_sensors
+        if hardware_sensors and profile_n_input:
+            creature._hardware_n_input = profile_n_input
+        # Recalculate dimensions with correct sensor mode
+        creature._n_sensor_channels = n_sensor_channels if hardware_sensors else creature._count_sensor_channels()
+        creature.n_input_neurons = n_input
+        creature.n_output_neurons = n_output
+
+        # 6. Cognitive Brain
         plasticity_pg = None
         if genome.plasticity_genome:
             plasticity_pg = PlasticityGenome(**genome.plasticity_genome)
