@@ -134,11 +134,104 @@ class IMUReader:
         upright = max(0.0, 1.0 - tilt / 45.0)
         return {'pitch': self.pitch, 'roll': self.roll, 'yaw': self.yaw, 'upright': upright}
 
+
+class UltrasonicReader:
+    """
+    HC-SR04 ultrasonic distance sensor reader.
+
+    Mounted on Freenove head bracket, facing forward.
+    GPIO pins: TRIG=GPIO 27, ECHO=GPIO 22 (adjustable).
+    Range: 2cm – 400cm, ~15° beam width.
+
+    Biology: Echolocation (bats) / whisker-based proximity sensing.
+    The ultrasonic sensor gives the robot a simple "obstacle ahead"
+    signal — the digital equivalent of a dog's nose bumping a wall.
+
+    Issue #103: This sensor provides the clear binary signal needed
+    to test whether the SNN can learn active avoidance behavior.
+    """
+    TRIG_PIN = 27
+    ECHO_PIN = 22
+    MAX_RANGE_CM = 400.0
+    TIMEOUT_S = 0.03  # 30ms timeout (~5m max at speed of sound)
+
+    def __init__(self):
+        self.gpio = None
+        self.distance_cm = self.MAX_RANGE_CM
+        self._available = False
+        try:
+            import RPi.GPIO as GPIO
+            self.gpio = GPIO
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(self.TRIG_PIN, GPIO.OUT)
+            GPIO.setup(self.ECHO_PIN, GPIO.IN)
+            GPIO.output(self.TRIG_PIN, False)
+            time.sleep(0.1)  # Settle
+            self._available = True
+            print(f'  Ultrasonic: HC-SR04 initialized (TRIG={self.TRIG_PIN}, ECHO={self.ECHO_PIN})')
+        except Exception as e:
+            print(f'  Ultrasonic: not available ({e}) — using max range')
+
+    def read(self) -> float:
+        """
+        Trigger measurement and return distance in meters.
+
+        Returns:
+            Distance in meters. Returns MAX_RANGE (4.0m) if no echo
+            or sensor unavailable.
+        """
+        if not self._available or self.gpio is None:
+            return self.MAX_RANGE_CM / 100.0
+
+        try:
+            GPIO = self.gpio
+            # Send 10µs trigger pulse
+            GPIO.output(self.TRIG_PIN, True)
+            time.sleep(0.00001)
+            GPIO.output(self.TRIG_PIN, False)
+
+            # Wait for echo start (rising edge)
+            t_timeout = time.time() + self.TIMEOUT_S
+            while GPIO.input(self.ECHO_PIN) == 0:
+                pulse_start = time.time()
+                if pulse_start > t_timeout:
+                    return self.MAX_RANGE_CM / 100.0
+
+            # Wait for echo end (falling edge)
+            t_timeout = time.time() + self.TIMEOUT_S
+            while GPIO.input(self.ECHO_PIN) == 1:
+                pulse_end = time.time()
+                if pulse_end > t_timeout:
+                    return self.MAX_RANGE_CM / 100.0
+
+            # Distance = time * speed_of_sound / 2
+            pulse_duration = pulse_end - pulse_start
+            distance_cm = pulse_duration * 34300 / 2.0
+
+            # Clamp to valid range
+            if distance_cm < 2.0 or distance_cm > self.MAX_RANGE_CM:
+                distance_cm = self.MAX_RANGE_CM
+
+            self.distance_cm = distance_cm
+            return distance_cm / 100.0  # Convert to meters
+
+        except Exception:
+            return self.MAX_RANGE_CM / 100.0
+
+    def cleanup(self):
+        """Release GPIO pins."""
+        if self._available and self.gpio:
+            try:
+                self.gpio.cleanup([self.TRIG_PIN, self.ECHO_PIN])
+            except Exception:
+                pass
+
 # ================================================================
 # SENSOR ENCODING (identical to mujoco_creature.py hardware mode)
 # ================================================================
 
-def encode_sensory(servo_angles_prev, cpg_phase, step, imu_data=None):
+def encode_sensory(servo_angles_prev, cpg_phase, step, imu_data=None,
+                   obstacle_distance=-1.0):
     import numpy as np
     s = np.zeros(48, dtype=np.float32)
     if servo_angles_prev:
@@ -151,6 +244,12 @@ def encode_sensory(servo_angles_prev, cpg_phase, step, imu_data=None):
         s[17] = imu_data['upright']
     else:
         s[14:18] = 0.5
+    # Channel 18: Ultrasonic proximity (Issue #103)
+    # HC-SR04: 2cm-400cm range. Same encoding as mujoco_creature.py.
+    _US_MAX_RANGE = 4.0
+    if obstacle_distance >= 0 and obstacle_distance < _US_MAX_RANGE:
+        proximity = 1.0 - min(obstacle_distance / _US_MAX_RANGE, 1.0)
+        s[18] = float(np.clip(proximity ** 0.5, 0.0, 1.0))
     return s
 
 # ================================================================
@@ -373,6 +472,7 @@ def main():
     print(f'{"="*60}\n')
 
     imu = IMUReader()
+    ultrasonic = UltrasonicReader()
 
     dashboard = None
     if args.dashboard:
@@ -492,10 +592,12 @@ def main():
         while (time.time()-t_start) < args.duration:
             t_step=time.time()
             imu_data = imu.update()
+            obstacle_dist = ultrasonic.read()
             cpg_points = cpg.compute(CONTROL_DT)
 
             if args.snn and snn and gate:
-                sensory = encode_sensory(prev_servo, cpg.get_phase_input(), step, imu_data)
+                sensory = encode_sensory(prev_servo, cpg.get_phase_input(), step, imu_data,
+                                         obstacle_distance=obstacle_dist)
 
                 # SNN step — same as simulator creature.think()
                 sensor_tensor = torch.zeros(snn.config.n_neurons, dtype=torch.float32)
@@ -633,6 +735,7 @@ def main():
 
     print(f'\n  Stopping... ({step} steps in {time.time()-t_start:.1f}s)')
     if servo: set_legs(servo, standing)
+    ultrasonic.cleanup()
     if args.snn and gate:
         gs=gate.get_stats()
         print(f'  Final: competence={gs["actor_competence"]:.3f}  CPG={gs["cpg_weight"]:.0%}')

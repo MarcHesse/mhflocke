@@ -1,5 +1,5 @@
 """
-MH-FLOCKE — Cerebellar Learning v0.4.1
+MH-FLOCKE — Cerebellar Learning v0.4.3
 ========================================
 Marr-Albus-Ito cerebellar forward model for motor correction.
 """
@@ -41,7 +41,7 @@ class CerebellarConfig:
     ltd_rate: float = 0.001        # PF→PkC LTD rate (when CF active = error)
     ltp_rate: float = 0.001        # PF→PkC LTP rate (when CF silent = consolidate)
     # Note: LTP balances LTD. In biology, LTP is slower but runs
-    # 10× more often (CF fires ~1Hz, silent ~99% of time).
+    # 10x more often (CF fires ~1Hz, silent ~99% of time).
     # Equal rates ensure weights don't collapse.
     cf_threshold: float = 0.05     # Min error magnitude to activate climbing fiber
     eligibility_decay: float = 0.95  # Parallel fiber eligibility trace decay
@@ -149,6 +149,7 @@ class InferiorOlive:
         self._heading_gain_lr = 0.0005
         self._navigation_cf = 0.0  # exposed for logging
         self._steering_gain_correction = 0.0  # DCN output: VOR gain modifier
+        self._obstacle_cf = 0.0  # obstacle proximity CF (Issue #103)
 
     def compute_cf_signal(self, sensor_data: dict) -> np.ndarray:
         """
@@ -354,6 +355,67 @@ class InferiorOlive:
         self._prev_heading = current_heading
         self._prev_steering = current_steering
 
+        # 10. OBSTACLE CF (Issue #103: Ultrasonic obstacle avoidance)
+        # Biology: Trigeminal reflex — whisker/face contact triggers
+        # immediate motor response via brainstem. The cerebellum receives
+        # climbing fiber input from the inferior olive when the animal
+        # approaches or contacts an obstacle.
+        #
+        # CRITICAL: CF must be ASYMMETRIC between push and pull PkC.
+        # If push and pull get identical CF → identical calcium →
+        # identical DCN inhibition → push-pull difference = 0 → 
+        # corrections = 0 ALWAYS.
+        #
+        # Biology: When an animal hits a wall, the correction is:
+        #   - REDUCE forward drive (push PkC get strong CF → LTD)
+        #   - INCREASE braking (pull PkC get weak/no CF → LTP)
+        # Result: DCN push < DCN pull → negative correction → slow down
+        #
+        # Three zones:
+        #   distance < 0.10m: COLLISION — strong CF on push PkC only
+        #   distance < 0.30m: DANGER — graded CF, push > pull  
+        #   distance < 0.80m: WARNING — hip yaw CF for turning
+        obstacle_dist = sensor_data.get('obstacle_distance', -1.0)
+        self._obstacle_cf = 0.0  # for logging
+
+        if obstacle_dist >= 0 and obstacle_dist < 4.0:
+            n_legs = 4
+            jpleg = self.n_actuators // n_legs
+
+            if obstacle_dist < 0.10:
+                # COLLISION: Strong CF on PUSH PkC, weak on PULL
+                # This creates asymmetry: push DCN drops, pull DCN stays high
+                # → negative correction → all joints retract/brake
+                for j in range(min(self.n_actuators, n_legs * jpleg)):
+                    push_idx = j * 2
+                    pull_idx = push_idx + 1
+                    if push_idx < self.n_pkc:
+                        cf[push_idx] = max(cf[push_idx], 0.9)  # Strong: suppress push
+                    if pull_idx < self.n_pkc:
+                        cf[pull_idx] = max(cf[pull_idx], 0.1)  # Weak: preserve pull
+                self._obstacle_cf = 0.9
+            elif obstacle_dist < 0.30:
+                # DANGER: Graded asymmetric CF
+                danger = np.clip((0.30 - obstacle_dist) / 0.20, 0.0, 1.0) * 0.7
+                for j in range(min(self.n_actuators, n_legs * jpleg)):
+                    push_idx = j * 2
+                    pull_idx = push_idx + 1
+                    if push_idx < self.n_pkc:
+                        cf[push_idx] = max(cf[push_idx], danger)        # Push: full CF
+                    if pull_idx < self.n_pkc:
+                        cf[pull_idx] = max(cf[pull_idx], danger * 0.15)  # Pull: much weaker
+                self._obstacle_cf = float(danger)
+            elif obstacle_dist < 0.80:
+                # WARNING: Hip yaw CF for turning — front legs only
+                warn = np.clip((0.80 - obstacle_dist) / 0.50, 0.0, 1.0) * 0.4
+                # Front legs (0, 1): hip yaw push CF to turn
+                for leg in [0, 1]:  # FL, FR
+                    base = leg * jpleg * 2
+                    if base + 1 < self.n_pkc:
+                        cf[base] = max(cf[base], warn)          # Push: turn
+                        cf[base + 1] = max(cf[base + 1], warn * 0.1)  # Pull: preserve
+                self._obstacle_cf = float(warn)
+
         return np.clip(cf, 0.0, 1.0)
 
     def _accumulate_forward_model(self, sensor_data: dict,
@@ -437,6 +499,7 @@ class InferiorOlive:
             'navigation_cf': self._navigation_cf,
             'steering_gain_correction': self._steering_gain_correction,
             'heading_gain': self._heading_gain,
+            'obstacle_cf': self._obstacle_cf,
         }
 
     def get_steering_gain_correction(self) -> float:
@@ -640,9 +703,9 @@ class CerebellarLearning:
         ltd_gate = self._pkc_layer.get_ltd_gate()  # [n_pkc], 0..2
         cf_silent = (ltd_gate < 0.05).float()       # No recent CF
 
-        # LTD: calcium × eligibility (dendritic computation)
+        # LTD: calcium x eligibility (dendritic computation)
         ltd = self._pf_eligibility * ltd_gate.unsqueeze(0)
-        # LTP: no calcium × eligibility (consolidation)
+        # LTP: no calcium x eligibility (consolidation)
         ltp = self._pf_eligibility * cf_silent.unsqueeze(0)
 
         # DA modulation (Level 15: reward → DA → LTP↑, LTD↓)
@@ -675,16 +738,45 @@ class CerebellarLearning:
         self.stats['pf_pkc_mean_weight'] = float(
             self._pf_pkc_weights.sum() / max(1, self._pf_pkc_mask.sum()))
 
-        # 8. DCN output: tonic - PkC inhibition (uses compartment activity)
-        pkc_act = self._pkc_layer.activity  # Smooth spike rate from compartment layer
-        dcn_out = self.config.dcn_tonic - pkc_act * 0.8
+        # 8. DCN output: tonic - PkC inhibition
+        #
+        # BUG FIX (Issue #103): The original used only PkC spike activity
+        # (self._pkc_layer.activity) which is an EMA of spikes. Since PkC
+        # rarely fire spikes (pf_to_pkc is too weak for V_threshold=1.0),
+        # activity ≈ 0 for all PkC → DCN = tonic(0.5) for all → 
+        # push - pull = 0 → corrections = 0. ALWAYS.
+        #
+        # The fix: Use the PkC COMPARTMENT activity (V_apical + V_basal)
+        # as continuous inhibition, not just binary spikes. This is more
+        # biologically accurate: PkC inhibit DCN via graded synaptic
+        # release, not just spike-triggered release.
+        #
+        # Biology: PkC→DCN synapses are GABAergic (inhibitory) and show
+        # graded release proportional to dendritic calcium + membrane
+        # potential. The DCN fires at its tonic rate minus the PkC
+        # inhibition. When CF activates specific PkC → those PkC have
+        # high calcium + basal voltage → stronger inhibition → their
+        # DCN partner goes below tonic → asymmetric correction.
+        #
+        # Ref: Gauck & Jaeger 2000 — DCN rebound from PkC inhibition
+        pkc_state = self._pkc_layer.get_compartment_state()
+        # Graded PkC output: combine apical (PF drive) + calcium (CF drive)
+        # Calcium is the key differentiator — it's high only where CF fires
+        pkc_graded = (pkc_state['apical'].abs() * 0.3 +
+                      pkc_state['calcium'] * 0.5 +
+                      self._pkc_layer.activity * 0.2)
+        # Normalize to 0..1 range
+        pkc_graded = pkc_graded.clamp(0.0, 1.5) / 1.5
+
+        dcn_out = self.config.dcn_tonic - pkc_graded * 0.8
         dcn_out = dcn_out.clamp(-1.0, 1.0)
 
         self.stats['dcn_activity'] = float(dcn_out.abs().mean())
+        self.stats['dcn_push_pull_diff'] = float(
+            (dcn_out[0::2] - dcn_out[1::2]).abs().mean()) if len(dcn_out) > 1 else 0.0
         self._last_dcn = dcn_out.detach().cpu().numpy()
 
-        # PkC compartment stats for dashboard
-        pkc_state = self._pkc_layer.get_compartment_state()
+        # PkC compartment stats for dashboard (reuse pkc_state from above)
         self.stats['pkc_calcium'] = float(pkc_state['calcium'].mean())
         self.stats['pkc_apical'] = float(pkc_state['apical'].mean())
         self.stats['pkc_complex_spikes'] = int(pkc_state['complex_spike'].sum())

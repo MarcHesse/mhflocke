@@ -1,5 +1,5 @@
 """
-MH-FLOCKE — MuJoCo World v0.4.1
+MH-FLOCKE — MuJoCo World v0.4.3
 ========================================
 Physics world management and simulation stepping.
 """
@@ -91,7 +91,7 @@ class MuJoCoWorld:
                  snn_dt: float = 0.01):
         """
         Args:
-            size: Weltgröße (für Boden-Plane)
+            size: World size (for ground plane)
             gravity: Schwerkraft (default: Erde, negativ = nach unten)
             dt: MuJoCo Zeitschritt (default: 2ms)
             render: True = offscreen Renderer aktivieren
@@ -179,8 +179,8 @@ class MuJoCoWorld:
         Lade komplettes MJCF aus String.
         
         Args:
-            xml_string: Vollständiges MJCF XML
-            assets: Dict {filename: bytes} für eingebettete Meshes/Texturen
+            xml_string: Complete MJCF XML
+            assets: Dict {filename: bytes} for embedded meshes/textures
         """
         if assets:
             self._model = mujoco.MjModel.from_xml_string(xml_string, assets)
@@ -196,7 +196,7 @@ class MuJoCoWorld:
     # ================================================================
 
     def add_ground(self, friction: float = 1.0, color: list = None):
-        """Boden-Plane hinzufügen."""
+        """Add ground plane."""
         self._ground_xml = _GROUND_XML.format(
             size=self.size, friction=friction)
         self._built = False  # Force rebuild
@@ -215,7 +215,7 @@ class MuJoCoWorld:
             name: Kreatur-Name (auto-generiert wenn None)
 
         Returns:
-            Kreatur-Name (für spätere Referenz)
+            Creature name (for later reference)
         """
         if name is None:
             name = f"creature_{len(self._creature_names)}"
@@ -237,7 +237,7 @@ class MuJoCoWorld:
     def load_creature_from_string(self, full_xml: str) -> str:
         """
         Lade Kreatur aus komplettem MJCF XML (parst body/actuator/sensor).
-        Für Kompatibilität mit URDFGenerator der jetzt MJCF erzeugt.
+        For compatibility with URDFGenerator which now generates MJCF.
 
         Returns:
             Kreatur-Name
@@ -275,7 +275,7 @@ class MuJoCoWorld:
     def add_object(self, shape: str, position: list, mass: float,
                    color: list = None, size: list = None) -> str:
         """
-        Objekt hinzufügen (box/sphere/cylinder).
+        Add object (box/sphere/cylinder).
 
         Returns:
             Objekt-Name
@@ -437,7 +437,7 @@ class MuJoCoWorld:
         return np.array(vels)
 
     def get_joint_states(self, creature_name: str = None) -> list:
-        """Detaillierte Gelenkzustände."""
+        """Detailed joint states."""
         self._ensure_built()
         states = []
         for i in range(self._model.njnt):
@@ -516,7 +516,51 @@ class MuJoCoWorld:
             'height': float(pos[2]),
             'forward_velocity': float(vel[3]),  # X-Richtung
             'upright': float(mat[2, 2]),  # Z-Komponente der Up-Achse (1.0 = aufrecht)
+            'obstacle_distance': self._read_rangefinder(),
         }
+
+    def _read_rangefinder(self, max_range: float = 4.0) -> float:
+        """
+        Read MuJoCo rangefinder sensor (simulates HC-SR04 ultrasonic).
+
+        MuJoCo rangefinder returns distance along the sensor site's
+        Z-axis direction. Returns -1.0 when no geom is hit within
+        the ray's range.
+
+        HC-SR04 specs: 2cm–400cm range, 15° beam width.
+        MuJoCo rangefinder: infinite range ray, 0-width beam.
+        We clamp to max_range for consistency with real hardware.
+
+        Args:
+            max_range: Maximum detection range in meters (default 4.0m)
+
+        Returns:
+            Distance to nearest obstacle in meters.
+            Returns max_range if no obstacle detected.
+        """
+        if self._model is None or self._data is None:
+            return max_range
+
+        # Find rangefinder sensor by name
+        try:
+            sensor_id = mujoco.mj_name2id(
+                self._model, mujoco.mjtObj.mjOBJ_SENSOR, 'ultrasonic')
+        except Exception:
+            return max_range
+
+        if sensor_id < 0:
+            return max_range
+
+        # Read sensor value from sensordata array
+        adr = self._model.sensor_adr[sensor_id]
+        raw_dist = float(self._data.sensordata[adr])
+
+        # MuJoCo rangefinder: -1.0 means no hit, 0.0 means uninitialized
+        # Real distance is always > 0 (sensor has physical offset from geoms)
+        if raw_dist <= 0:
+            return max_range
+
+        return min(raw_dist, max_range)
 
     @staticmethod
     def _quat_to_euler(quat):
@@ -663,7 +707,7 @@ class MuJoCoWorld:
     # ================================================================
 
     def reset(self):
-        """Welt zurücksetzen (State auf Anfang)."""
+        """Reset world (state to initial)."""
         if self._model is not None and self._data is not None:
             mujoco.mj_resetData(self._model, self._data)
         self._contacts = []
@@ -687,7 +731,7 @@ class MuJoCoWorld:
         self.step_count = 0
 
     def close(self):
-        """Aufräumen."""
+        """Cleanup."""
         if self._renderer:
             try:
                 self._renderer.close()

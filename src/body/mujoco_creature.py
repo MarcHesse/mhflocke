@@ -1,9 +1,10 @@
 """
-MH-FLOCKE — MuJoCo Creature v0.4.2
+MH-FLOCKE — MuJoCo Creature v0.4.3
 ========================================
 SNN-MuJoCo bridge: population coding, sense-think-act cycle.
 
-v0.4.2: Scalable cerebellar architecture for hardware transfer.
+v0.4.3: Ultrasonic sensor, additive CPG blending.
+  v0.4.2: Scalable cerebellar architecture for hardware transfer.
   - profile.json drives SNN topology (n_input, n_hidden, n_output)
   - Cerebellar populations scale proportionally for small neuron counts
   - Hardware-matched sensor encoding (--hardware-sensors flag)
@@ -29,10 +30,10 @@ def rate_encode(value: float, n_neurons: int,
                 min_val: float = -1.0, max_val: float = 1.0,
                 gain: float = 2.0) -> torch.Tensor:
     """
-    Gaussianische Tuning Curves: ein Wert → Population von Spike-Strömen.
+    Gaussian Tuning Curves: one value -> population of spike currents.
     
-    Jedes Neuron hat ein "preferred value" (gleichmäßig verteilt).
-    Aktivierung = Gauss(value - preferred) × gain.
+    Each neuron has a "preferred value" (uniformly distributed).
+    Activation = Gauss(value - preferred) * gain.
     
     Biologisch: wie Place Cells, Head Direction Cells, etc.
     """
@@ -117,15 +118,17 @@ def qpos_to_servo_normalized(joint_angles_rad):
     return servo_norm
 
 
-def encode_sensory_hardware_matched(joint_angles_rad, cpg_phase, imu_data):
+def encode_sensory_hardware_matched(joint_angles_rad, cpg_phase, imu_data,
+                                    obstacle_distance: float = -1.0):
     """
-    Encode sensor data in the EXACT same format as the Pi Bridge v2.5.
+    Encode sensor data in the EXACT same format as the Pi Bridge v2.5+.
     
     Layout (48 channels, matches freenove_bridge.py encode_sensory()):
       Channels  0-11: 12 joint angles (servo positions, normalized /180)
       Channels 12-13:  2 CPG phase (sin, cos)
       Channels 14-17:  4 IMU (pitch/90, roll/90, yaw/180, upright)
-      Channels 18-47: 30 zeros (padding to 48)
+      Channel  18:      1 Ultrasonic proximity (0=far/none, 1=touching)
+      Channels 19-47: 29 zeros (padding to 48)
     
     NO position, NO velocity, NO height, NO forward_velocity,
     NO joint_velocities, NO visual channels — the real robot
@@ -135,6 +138,7 @@ def encode_sensory_hardware_matched(joint_angles_rad, cpg_phase, imu_data):
         joint_angles_rad: 12 joint angles in radians from MuJoCo (relative to ref)
         cpg_phase: [sin(phase), cos(phase)] from CPG
         imu_data: dict with pitch, roll, yaw (degrees), upright (0-1)
+        obstacle_distance: distance to obstacle in meters (-1 or max_range = none)
     
     Returns:
         np.array of 48 float32 values
@@ -153,7 +157,23 @@ def encode_sensory_hardware_matched(joint_angles_rad, cpg_phase, imu_data):
     s[16] = imu_data['yaw'] / 180.0 * 0.5 + 0.5     # [-180,180] -> [0,1]
     s[17] = imu_data['upright']                       # [0,1]
     
-    # Channels 18-47: zeros (padding, matches Bridge)
+    # Channel 18: Ultrasonic proximity (Issue #103)
+    # Biology: trigeminal/whisker proximity sense — binary urgency signal.
+    # 0.0 = no obstacle or far away (>= max_range)
+    # 1.0 = obstacle touching (distance ~0)
+    # Nonlinear mapping: strong signal only when close (< 0.5m)
+    # HC-SR04 max range = 4.0m, effective for avoidance < 1.0m
+    _US_MAX_RANGE = 4.0
+    if obstacle_distance < 0 or obstacle_distance >= _US_MAX_RANGE:
+        s[18] = 0.0
+    else:
+        # Inverse: closer = higher value. Nonlinear for urgency.
+        # 4.0m → 0.0, 1.0m → 0.25, 0.5m → 0.5, 0.1m → 0.9, 0.0m → 1.0
+        proximity = 1.0 - min(obstacle_distance / _US_MAX_RANGE, 1.0)
+        # Square for urgency: gentle at distance, steep when close
+        s[18] = float(np.clip(proximity ** 0.5, 0.0, 1.0))
+    
+    # Channels 19-47: zeros (padding, matches Bridge)
     return s
 
 
@@ -386,6 +406,16 @@ class MuJoCoCreature:
         sensor_values.append(np.clip(_vis_heading, -1.0, 1.0))
         sensor_values.append(np.clip(_vis_distance, -1.0, 1.0))
 
+        # --- Obstacle proximity (Issue #103): Rangefinder / Ultrasonic ---
+        obstacle_dist = data.get('obstacle_distance', -1.0)
+        self._obstacle_distance = obstacle_dist  # Store for reward computation
+        _us_max = 4.0
+        if obstacle_dist < 0 or obstacle_dist >= _us_max:
+            sensor_values.append(0.0)
+        else:
+            proximity = 1.0 - min(obstacle_dist / _us_max, 1.0)
+            sensor_values.append(float(np.clip(proximity ** 0.5, 0.0, 1.0)))
+
         # Population Coding -> SNN Input
         n = self.snn.config.n_neurons
         snn_input = torch.zeros(n, device=self.snn.device, dtype=self.snn.dtype)
@@ -430,8 +460,15 @@ class MuJoCoCreature:
         # IMU from MuJoCo quaternion
         imu_data = extract_imu_from_mujoco(self.world._data.qpos)
         
-        # Encode in Bridge-identical format
-        sensory = encode_sensory_hardware_matched(joint_angles_rad, cpg_phase_val, imu_data)
+        # Ultrasonic rangefinder (Channel 18, Issue #103)
+        obstacle_dist = self.world._read_rangefinder() if hasattr(self.world, '_read_rangefinder') else -1.0
+        # Store for training loop access (reward computation)
+        self._obstacle_distance = obstacle_dist
+        
+        # Encode in Bridge-identical format (now includes Channel 18)
+        sensory = encode_sensory_hardware_matched(
+            joint_angles_rad, cpg_phase_val, imu_data,
+            obstacle_distance=obstacle_dist)
         
         # Population Coding: 48 values -> n_input SNN neurons
         n = self.snn.config.n_neurons
@@ -554,10 +591,20 @@ class MuJoCoCreature:
             controls = [c * motor_scale for c in controls]
 
         # Blend with spinal CPG (innate rhythmic pattern)
+        # Biology: CPG provides the base rhythm. Cerebellar corrections
+        # are ADDED to the CPG output, not weighted against it.
+        # The CPG weight controls how much the CPG contributes,
+        # but corrections are always fully applied on top.
+        #
+        # Old (broken): cpg * 0.9 + correction * 0.1 → corrections = 10%
+        # New: cpg * 0.9 + correction * 1.0 → corrections at full strength
+        #
+        # This matches biology: the cerebellum modulates the CPG output
+        # via the reticulospinal tract, it doesn't compete with it.
         cpg_cmd = getattr(self, '_cpg_cmd', None)
         cpg_weight = getattr(self, '_cpg_weight', 0.0)
         if cpg_cmd is not None and cpg_weight > 0:
-            controls = [cpg * cpg_weight + cb * (1.0 - cpg_weight)
+            controls = [cpg * cpg_weight + cb
                        for cpg, cb in zip(cpg_cmd, controls)]
 
         # Add reflex commands (emergency overrides)
@@ -842,7 +889,7 @@ class MuJoCoCreatureBuilder:
             world.load_creature_xml(body_xml, act_xml, sens_xml)
             world._build()
 
-        # 3. SNN dimensionieren — Scalable Cerebellar Architecture v0.4.2
+        # 3. SNN topology — Scalable Cerebellar Architecture v0.4.3
         #
         # Profile-driven: if profile.json has snn.n_input, use that.
         # Hardware-matched: if --hardware-sensors, use 48 raw channels.

@@ -419,3 +419,70 @@ def inject_ball(xml_string: str, pos=(8.0, 1.0, 0.12), radius=0.1, mass=0.3) -> 
     </body>"""
     # Insert before </worldbody>
     return xml_string.replace('</worldbody>', ball_xml + '\n  </worldbody>')
+
+
+def inject_wall(xml_string: str, distance: float = 1.5,
+                width: float = 3.0, height: float = 0.3,
+                thickness: float = 0.20) -> str:
+    """
+    Inject a static wall obstacle into a MuJoCo scene XML.
+
+    The wall is a BARE GEOM directly in worldbody — not wrapped in a <body>.
+    This is critical because load_creature_from_string() parses all <body>
+    children as robot parts. A bare geom in worldbody is truly static and
+    belongs to the world body (body 0), which is the immovable ground.
+
+    The wall is perpendicular to the X-axis (walking direction),
+    centered at Y=0. The creature must learn to stop or turn.
+
+    Args:
+        xml_string: MuJoCo XML as string
+        distance: X position of wall center (meters from origin)
+        width: Wall width in Y direction (meters)
+        height: Wall height in Z direction (meters)
+        thickness: Wall thickness in X direction (meters)
+
+    Returns:
+        Modified XML string with wall geom added to worldbody
+    """
+    # Wall material (dark red, clearly visible)
+    wall_material = (
+        '\n    <material name="wall_mat" rgba="0.6 0.15 0.1 1" '
+        'specular="0.2" shininess="0.3"/>'
+    )
+
+    # Size is half-extents for box geom
+    hx = thickness / 2
+    hy = width / 2
+    hz = height / 2
+
+    # Bare geom in worldbody — no <body> wrapper!
+    # A geom directly in <worldbody> belongs to world body 0 (immovable).
+    # load_creature_from_string only parses <body> children, so this
+    # geom survives as a static world obstacle.
+    wall_xml = f"""
+    <!-- Wall obstacle: static barrier for obstacle avoidance (Issue #103) -->
+    <geom name="wall_geom" type="box" pos="{distance:.3f} 0 {hz:.3f}"
+          size="{hx:.3f} {hy:.3f} {hz:.3f}"
+          material="wall_mat" friction="1.0 0.5 0.01"
+          conaffinity="1" contype="1" condim="3"/>"""
+
+    # Inject material into <asset>
+    if '<asset>' in xml_string and 'wall_mat' not in xml_string:
+        xml_string = xml_string.replace('<asset>', '<asset>' + wall_material)
+
+    # Insert wall geom right after the floor geom (before any <body>)
+    # This ensures it's a worldbody-level geom, not inside a creature body
+    if '<geom name="floor"' in xml_string:
+        # Find end of floor geom line and insert after it
+        floor_end = xml_string.find('/>', xml_string.find('<geom name="floor"'))
+        if floor_end >= 0:
+            insert_pos = floor_end + 2
+            xml_string = xml_string[:insert_pos] + wall_xml + xml_string[insert_pos:]
+        else:
+            xml_string = xml_string.replace('</worldbody>', wall_xml + '\n  </worldbody>')
+    else:
+        xml_string = xml_string.replace('</worldbody>', wall_xml + '\n  </worldbody>')
+
+    print(f'  Wall: injected at x={distance:.1f}m (w={width:.1f}m, h={height:.1f}m)')
+    return xml_string

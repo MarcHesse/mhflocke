@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-MH-FLOCKE — Level 15 Training v0.4.2
+MH-FLOCKE — Level 15 Training v0.4.3
 =======================================
 "A dog doesn't stand still on a meadow."
 
-v0.4.2: Scalable SNN for hardware brain transfer.
+v0.4.3: Obstacle avoidance, graded DCN, additive CPG blending.
+#   v0.4.2: Scalable SNN for hardware brain transfer.
   - --n-hidden: SNN hidden neuron count (default from profile.json)
   - --hardware-sensors: Bridge v2.5 sensor layout (12 servo + 2 CPG + 4 IMU)
   - --no-vision: Disable visual channels for camera-less robots
@@ -41,7 +42,7 @@ Usage:
     --scene "walk on flat meadow" --steps 50000 --no-terrain --no-sensory \\
     --no-vision --hardware-sensors --auto-reset 500
 
-Author: MH-FLOCKE Level 15 v0.4.2
+Author: MH-FLOCKE Level 15 v0.4.3
 """
 
 import sys, os
@@ -66,7 +67,7 @@ from src.brain.spinal_cpg import SpinalCPG, SpinalCPGConfig
 from src.brain.developmental_schedule import DevelopmentalSchedule, DevelopmentalConfig
 from src.body.terrain import (
     TerrainConfig, generate_heightfield, inject_terrain, inject_terrain_geoms,
-    terrain_type_from_scene, difficulty_from_scene, inject_ball,
+    terrain_type_from_scene, difficulty_from_scene, inject_ball, inject_wall,
 )
 
 logger = logging.getLogger(__name__)
@@ -359,7 +360,7 @@ def main():
         (3.0, 1.5, 0.12),   # Stage 3: significant (~27°)
         (3.0, 2.0, 0.12),   # Stage 4: original position (~34°)
     ]
-    parser = argparse.ArgumentParser(description='MH-FLOCKE Level 15 v0.4.2')
+    parser = argparse.ArgumentParser(description='MH-FLOCKE Level 15 v0.4.3')
     parser.add_argument('--scene', type=str, default='walk on hilly grassland')
     parser.add_argument('--steps', type=int, default=200000)
     parser.add_argument('--xml', type=str, default='creatures/dm_quadruped/creature.xml')
@@ -375,6 +376,8 @@ def main():
     parser.add_argument('--difficulty', type=float, default=None)
     parser.add_argument('--pci-interval', type=int, default=500)
     parser.add_argument('--resume', type=str, default=None)
+    parser.add_argument('--fresh', action='store_true',
+                        help='Skip loading brain.pt — start with completely fresh SNN + cognitive state')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     parser.add_argument('--skip-morph-check', action='store_true')
     parser.add_argument('--creature-name', type=str, default='Mogli')
@@ -406,7 +409,7 @@ def main():
         torch.backends.cudnn.benchmark = False
 
     print(f'\n{"="*65}')
-    print(f'  MH-FLOCKE -- Level 15 v0.4.2')
+    print(f'  MH-FLOCKE -- Level 15 v0.4.3')
     print(f'  "A dog doesn\'t stand still on a meadow."')
     print(f'{"="*65}')
     print(f'  Scene: "{args.scene}"')
@@ -466,6 +469,14 @@ def main():
     # Detect ball scene from scene text (inject ball as scene object, not model part)
     _scene_has_ball = any(w in args.scene.lower() for w in ['ball', 'toy', 'fetch', 'spielzeug'])
 
+    # Detect wall/obstacle scene (Issue #103: ultrasonic obstacle avoidance)
+    _scene_has_wall = any(w in args.scene.lower() for w in ['wall', 'wand', 'obstacle', 'hindernis', 'barrier'])
+    _wall_distance = 0.8  # meters from origin — close for fast episodic learning
+    if 'far' in args.scene.lower() or 'weit' in args.scene.lower():
+        _wall_distance = 1.5
+    elif 'very far' in args.scene.lower():
+        _wall_distance = 3.0
+
     if is_external_mjcf:
         # Go2 / Menagerie: load via from_xml_path (handles <include>, meshdir)
         # Terrain/Ball injection for external MJCF: write patched XML as temp file
@@ -473,7 +484,7 @@ def main():
         _pid = os.getpid()
         hfield_path = os.path.join('output', f'mhflocke_terrain_{_pid}.png')
         os.makedirs('output', exist_ok=True)
-        _needs_temp_xml = (terrain_cfg.terrain_type != 'flat') or _scene_has_ball
+        _needs_temp_xml = (terrain_cfg.terrain_type != 'flat') or _scene_has_ball or _scene_has_wall
         if _needs_temp_xml:
             with open(xml_path) as f:
                 xml_string = f.read()
@@ -486,6 +497,8 @@ def main():
                 _init_ball = main._ball_positions[0]  # Start at curriculum Stage 0
                 xml_string = inject_ball(xml_string, pos=_init_ball)
                 print(f'  Ball: injected at {_init_ball} -- curriculum Stage 0')
+            if _scene_has_wall:
+                xml_string = inject_wall(xml_string, distance=_wall_distance)
             # Write temp file next to original (so <include> paths resolve)
             temp_xml = os.path.join(os.path.dirname(xml_path), f'_train_temp_{_pid}.xml')
             with open(temp_xml, 'w') as f:
@@ -519,6 +532,8 @@ def main():
             print(f'  Terrain injected: {terrain_cfg.terrain_type} (h_max={terrain_cfg.max_height * terrain_cfg.difficulty / 0.3:.3f}m)')
         else:
             print(f'  Terrain: flat (no heightfield)')
+        if _scene_has_wall:
+            xml_string = inject_wall(xml_string, distance=_wall_distance)
         creature = MuJoCoCreatureBuilder.build(genome, world=world, device=device,
             creature_name=args.creature_name.lower(), xml_string=xml_string,
             n_hidden_neurons=n_hidden,
@@ -763,7 +778,9 @@ def main():
     # but inheriting the body schema and instincts of its species.
     creature_base = os.path.join('creatures', args.creature_name.lower())
     brain_file_auto = os.path.join(creature_base, 'brain', 'brain.pt')
-    if os.path.exists(brain_file_auto) and hasattr(creature, 'brain') and creature.brain:
+    if args.fresh:
+        print(f'\n  --fresh: Skipping brain.pt — completely fresh start')
+    elif os.path.exists(brain_file_auto) and hasattr(creature, 'brain') and creature.brain:
         from src.brain.brain_persistence import load_brain, brain_info
         bi = brain_info(brain_file_auto)
         print(f'\n  Brain found: {bi.get("n_episodes", 0)} episodes, '
@@ -797,7 +814,7 @@ def main():
 
     recorder = None
     flog_path = None
-    run_id = f'v034_{int(time.time())}'
+    run_id = f'v043_{int(time.time())}'
     creature_dir = f'creatures/{args.creature_name.lower()}/{run_id}'
     if not args.no_flog:
         try:
@@ -811,7 +828,7 @@ def main():
                 'difficulty': terrain_cfg.difficulty,
                 'steps': total_steps,
                 'device': device,
-                'version': 'v0.4.2',
+                'version': 'v0.4.3',
                 'n_neurons': creature.snn.config.n_neurons,
                 'population_sizes': {
                     'n_input': creature.n_input_neurons,
@@ -875,6 +892,11 @@ def main():
     auto_reset_limit = args.auto_reset
     consecutive_fallen = 0
     reset_count = 0
+
+    # --- Issue #103: Wall episode state ---
+    wall_episode_count = 0
+    _wall_last_obs_dist = 4.0  # hysteresis: remember last known distance
+    _wall_obs_cooldown = 0     # steps since last wall detection
 
     # --- Issue #76d: Ball approach reward state ---
     # Biology: Dopamine burst on approach to salient stimulus (Schultz 1997).
@@ -1223,6 +1245,78 @@ def main():
                 main._ball_best_dist_running = ball_dist
             reward += ball_approach_reward
 
+        # --- Issue #103: Obstacle avoidance reward ---
+        # Strong negative DA when hitting wall, positive when avoiding.
+        # This gives the SNN a clear, binary learning signal.
+        #
+        # Hysteresis: After the rangefinder detects a wall and then loses it
+        # (e.g. robot deflects sideways), keep the negative reward active
+        # for a cooldown period. This prevents the reward from flickering
+        # between "wall" and "safe" on every step.
+        obstacle_reward = 0.0
+        _obs_dist = sensor_data.get('obstacle_distance', -1.0)
+        
+        # Hysteresis: if rangefinder recently saw wall, use last known distance
+        if _obs_dist >= 0 and _obs_dist < 2.0:
+            _wall_last_obs_dist = _obs_dist
+            _wall_obs_cooldown = 50  # keep active for 50 steps after last detection
+        elif _wall_obs_cooldown > 0:
+            _wall_obs_cooldown -= 1
+            _obs_dist = _wall_last_obs_dist  # use last known distance
+        
+        if _scene_has_wall and _obs_dist >= 0 and not is_fallen:
+            if _obs_dist < 0.15:
+                # COLLISION: strong punishment — "you hit the wall"
+                obstacle_reward = -15.0
+                sensor_data['obstacle_collision'] = True
+            elif _obs_dist < 0.30:
+                # DANGER ZONE: moderate punishment — "too close, brake!"
+                obstacle_reward = -3.0 * (0.30 - _obs_dist) / 0.15
+            elif _obs_dist < 0.80:
+                # WARNING: small punishment — "pay attention"
+                obstacle_reward = -0.5 * (0.80 - _obs_dist) / 0.50
+            else:
+                # SAFE: small reward for maintaining distance
+                obstacle_reward = 0.2
+            reward += obstacle_reward
+        # Pass obstacle distance to sensor_data for cerebellar CF
+        sensor_data['obstacle_distance'] = _obs_dist
+
+        # --- Issue #103: Episodic wall reset ---
+        # Biology: A puppy that bumps into a wall doesn't walk 10m away.
+        # It backs up, reorients, and tries again. Each approach is a
+        # short episode. The puppy gets dozens of attempts per session.
+        # Without reset, the robot gets ONE wall approach in 20k steps.
+        # With reset: 10-20 approach-collision-reset cycles.
+        _wall_reset = False
+        if _scene_has_wall and _obs_dist >= 0 and _obs_dist < 0.15 and step > 500:
+            _wall_reset = True
+            wall_episode_count += 1
+            # Reset physics to standing pose
+            if world._model.nkey > 0:
+                mujoco.mj_resetDataKeyframe(world._model, world._data, 0)
+            else:
+                world._data.qpos[:] = 0
+                world._data.qvel[:] = 0
+                world._data.qpos[2] = standing_h + 0.02
+            mujoco.mj_forward(world._model, world._data)
+            consecutive_fallen = 0
+            is_fallen = False
+            creature._was_fallen = False
+            creature._prev_x = float(world._data.qpos[0])
+            _wall_last_obs_dist = 4.0  # reset hysteresis
+            _wall_obs_cooldown = 0
+            # Reset cerebellum episode state (not weights!)
+            if cb:
+                cb.reset_episode()
+            # Negative DA burst: "you hit the wall" — weakens recent synapses
+            creature.snn.set_neuromodulator('da', 0.0)
+            if wall_episode_count <= 20 or wall_episode_count % 5 == 0:
+                print(f'  [WALL HIT #{wall_episode_count} at step {step}, x={cur_x:.2f}]')
+
+        # Debug: show obstacle distance for first few steps
+        # (uncomment for debugging: print(f'  [DBG step {step}] obs_dist=...'))
+
         # DA signal: ensure minimum DA even when fallen so learning continues
         da_signal = np.clip(reward / 10.0, 0.05, 1.0)
         creature.snn.neuromod_levels['da'] = float(da_signal)
@@ -1304,6 +1398,28 @@ def main():
                 if _bdist_prox < 1.0:
                     # Linear: 1.0m → 1.0, 0.3m → 0.3, 0.0m → 0.1
                     _proximity_amp_scale = max(0.1, 0.3 + 0.7 * (_bdist_prox / 1.0))
+
+        # Issue #103: Obstacle proximity brake (Trigeminal reflex)
+        # Biology: When a dog's whiskers/nose detect a wall, the brainstem
+        # IMMEDIATELY reduces locomotor drive via reticulospinal pathway.
+        # This is a hardwired reflex — no learning needed. It gives the
+        # cerebellum TIME to compute corrections instead of slamming into
+        # the wall at full CPG speed.
+        #
+        # Without this brake, CPG at 90% overpowers any cerebellar correction.
+        # The cerebellum learns corrections of ~0.01 but CPG pushes with 0.9.
+        # The brake reduces CPG amplitude proportionally to obstacle proximity,
+        # creating a "space" for cerebellar corrections to actually matter.
+        # Tuning: brake starts at 0.40m (was 0.80m — too early, caused crawling).
+        # Minimum amplitude 30% (was 5% — too aggressive, robot almost stopped).
+        # Goal: robot still walks at reasonable speed near wall, but slows enough
+        # that cerebellar corrections can influence direction.
+        if _scene_has_wall and not is_fallen:
+            _obs_dist_brake = sensor_data.get('obstacle_distance', -1.0)
+            if _obs_dist_brake >= 0 and _obs_dist_brake < 0.40:
+                # 0.40m → 100%, 0.20m → 60%, 0.05m → 30%
+                _obstacle_amp = max(0.30, 0.30 + 0.70 * (_obs_dist_brake / 0.40))
+                _proximity_amp_scale *= _obstacle_amp
 
         if is_external_mjcf:
             # Go2: direct joint control (per-joint amplitudes)
@@ -1502,7 +1618,8 @@ def main():
         if step > 0 and step % log_every == 0:
             avg_ms = np.mean(step_times[-log_every:]) * 1000
             eta_min = (total_steps - step) * (avg_ms / 1000) / 60
-            line1 = (f'  {step:>7,}/{total_steps:,}  dist:{max_dist:>5.2f}m  vel:{vel_mps:.3f}m/s'
+            line1 = (f'  {step:>7,}/{total_steps:,}  dist:{max_dist:>5.2f}m  x:{cur_x:.2f}'
+                     f'  vel:{vel_mps:.3f}m/s'
                      f'  up:{upright:.2f}  F:{"Y" if is_fallen else "N"}  falls:{fall_count}  rec:{recovery_count}')
             if cb:
                 s = cb.get_stats()
@@ -1533,6 +1650,8 @@ def main():
                      f'  terr:{terrain_cfg.difficulty:.2f}'
                      f'  TR:{terrain_reflex.stats["terrain_reflex_mag"]:.3f}'
                      f'  ft:{int(foot_sensor.contacts.sum())}')
+            if _scene_has_wall:
+                line3 += f'  od:{_obs_dist:.2f}'
             # Issue #75: sensory info
             if sensory_env:
                 sm = sensor_data.get('smell_strength', 0.0)
@@ -1561,6 +1680,8 @@ def main():
     print(f'  Speed: {avg_ms:.2f}ms/step ({1000/avg_ms:.0f} sps)')
     print(f'  Max distance: {max_dist:.3f}m')
     print(f'  Falls: {fall_count:,}  Recoveries: {recovery_count}  Resets: {reset_count}')
+    if _scene_has_wall:
+        print(f'  Wall hits: {wall_episode_count}  (episodic resets)')
     print(f'  Best upright streak: {best_upright_streak}')
     gs = gate.get_stats()
     print(f'  Actor competence: {gs["actor_competence"]:.3f}')
@@ -1599,7 +1720,7 @@ def main():
         'vel_ema': gate.vel_ema,
         'cpg_phases': spinal_cpg._phases.tolist(),
         'cpg_step': spinal_cpg._step,
-        'version': 'v0.4.2', 'scene': args.scene, 'seed': args.seed,
+        'version': 'v0.4.3', 'scene': args.scene, 'seed': args.seed,
         'terrain_type': terrain_cfg.terrain_type, 'terrain_difficulty': terrain_cfg.difficulty,
         'flog_path': flog_path,
         'flog_frames': recorder.frame_count if recorder else 0,
