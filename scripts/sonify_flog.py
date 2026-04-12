@@ -14,6 +14,7 @@ Audio layers (mixed together):
   7. DA Melody       — dopamine reward as rising/falling tone
   8. Ambient Pad     — valence/arousal control warm pad texture
   9. Ball Proximity   — rising ping when approaching ball, pan follows direction
+ 10. Wall Proximity   — warning hum near wall, deep impact thud on collision
 
 Output: WAV file matching video duration, then mux with FFmpeg.
 
@@ -418,6 +419,38 @@ class FLOGSonifier:
                     burst_freq = SCALE_FREQS[min(17, len(SCALE_FREQS) - 1)]
                     self._write(sine(burst_freq, 0.1, self.sr, amp=0.06),
                                 sample_pos, prox_pan)
+
+            # 10. Wall/Obstacle Proximity — warning hum + collision impact (Issue #103)
+            # Biology: Auditory representation of trigeminal/whisker danger signal.
+            # Low rumble grows louder as robot approaches wall. Sharp impact on collision.
+            obs_dist = s.get('obstacle_distance', -1.0)
+            if obs_dist < 0:
+                obs_dist = s.get('od', -1.0)
+            if obs_dist >= 0 and obs_dist < 1.0:
+                # Warning hum: lower pitch + louder when closer
+                wall_prox = max(0, 1.0 - obs_dist)
+                warn_freq = 60 + wall_prox * 40
+                warn_amp = 0.02 + wall_prox * 0.08
+                if ci % 3 == 0:
+                    warn_dur = min(chunk_dur * 3, 0.15)
+                    warn = sine(warn_freq, warn_dur, self.sr, amp=warn_amp)
+                    warn += np.random.randn(len(warn)) * warn_amp * 0.3
+                    warn *= np.exp(-np.linspace(0, 3, len(warn)))
+                    self._write(warn, sample_pos, 0.5)
+            # Wall collision: deep thud + metallic scrape
+            if obs_dist >= 0 and obs_dist < 0.15:
+                if not getattr(self, '_prev_wall_hit', False):
+                    wall_thud = sine(45, 0.3, self.sr, amp=0.35)
+                    wall_thud *= np.exp(-np.linspace(0, 6, len(wall_thud)))
+                    scrape_n = int(0.2 * self.sr)
+                    scrape = np.random.randn(scrape_n) * 0.08
+                    scrape = _lp_filter(scrape, cutoff_ratio=0.15)
+                    scrape *= np.exp(-np.linspace(0, 5, scrape_n))
+                    self._write(wall_thud, sample_pos, 0.5)
+                    self._write(scrape, sample_pos + int(0.05 * self.sr), 0.5)
+                self._prev_wall_hit = True
+            else:
+                self._prev_wall_hit = False
 
         # End card -- resolving chord, fade to silence
         end_start = title_samples + int(self.video_dur * self.sr)
