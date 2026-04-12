@@ -6,7 +6,6 @@ Renders Freenove training FLOG with full dashboard overlay.
 Based on render_go2_mujoco.py pipeline.
 
 Usage:
-    cd D:\\claude\\mhflocke-work
     python scripts/render_freenove.py creatures/freenove/v034_.../training_log.bin
     python scripts/render_freenove.py creatures/freenove/v034_.../training_log.bin --speed 3
 """
@@ -84,8 +83,13 @@ def _load_font(size, bold=False):
     return ImageFont.load_default()
 
 
-def render_title_card(w, h, fps, dur, pipe):
+def render_title_card(w, h, fps, dur, pipe, meta=None):
     from PIL import ImageDraw
+    meta = meta or {}
+    version = meta.get('version', 'v0.4.3')
+    scene = meta.get('task', meta.get('scene', 'walk on flat meadow'))
+    n_neurons = meta.get('n_neurons', 232)
+    total_steps = meta.get('steps', 20000)
     n = int(fps * dur)
     sc = max(1.0, w / 1920.0)
     fb = _load_font(max(48, int(64 * sc)), bold=True)
@@ -108,14 +112,14 @@ def render_title_card(w, h, fps, dur, pipe):
         cy = h // 2
         d.text((w//2-ox, cy-int(90*sc)), 'MH-FLOCKE',
                fill=(0, a(200), a(220)), font=fb)
-        d.text((w//2-ox, cy-int(15*sc)), 'Freenove Robot Dog \u00b7 Level 15 v0.4.2',
+        d.text((w//2-ox, cy-int(15*sc)), f'Freenove Robot Dog \u00b7 Level 15 {version}',
                fill=(a(160), a(195), a(235)), font=fm)
-        d.text((w//2-ox, cy+int(20*sc)), '\u201cwalk on flat meadow\u201d',
+        d.text((w//2-ox, cy+int(20*sc)), f'\u201c{scene}\u201d',
                fill=(a(200), a(180), a(100)), font=fm)
         lines = [
             'Architecture: Izhikevich SNN + CPG + R-STDP + Cerebellum',
             'Robot: Freenove FNK0050 \u00b7 100\u20ac Kit \u00b7 Raspberry Pi 4',
-            '232 neurons \u00b7 12 actuators \u00b7 50,000 steps',
+            f'{n_neurons} neurons \u00b7 12 actuators \u00b7 {total_steps:,} steps',
             '',
             '\u00a9 2026 Marc Hesse \u00b7 mhflocke.com',
         ]
@@ -185,9 +189,10 @@ def main():
     p.add_argument('--width', type=int, default=1920)
     p.add_argument('--height', type=int, default=1080)
     p.add_argument('--fps', type=int, default=30)
-    p.add_argument('--speed', type=float, default=2.0)
+    p.add_argument('--speed', type=float, default=1.5)
     p.add_argument('--distance', type=float, default=0.6)
-    p.add_argument('--azimuth', type=float, default=150)
+    p.add_argument('--azimuth', type=float, default=None,
+                   help='Camera azimuth (default: auto, 30 for wall scenes, 150 for normal)')
     p.add_argument('--elevation', type=float, default=-15)
     args = p.parse_args()
 
@@ -214,9 +219,41 @@ def main():
     n_frames = int(video_dur * args.fps)
     print(f'  Sim: {total_sim:.1f}s -> Video: {video_dur:.1f}s ({n_frames} frames)')
 
-    model = mujoco.MjModel.from_xml_path(os.path.abspath(FREENOVE_XML))
+    # --- Read knowledge.json from FLOG directory (scene context) ---
+    knowledge = {}
+    knowledge_path = os.path.join(os.path.dirname(args.flog), 'knowledge.json')
+    if os.path.exists(knowledge_path):
+        with open(knowledge_path) as kf:
+            knowledge = json.load(kf)
+        print(f'  Scene: "{knowledge.get("scene", "?")}"')
+
+    # --- Detect wall/obstacle scene and inject into XML ---
+    scene_text = knowledge.get('scene', flog.meta.get('task', ''))
+    _scene_has_wall = any(w in scene_text.lower() for w in ['wall', 'wand', 'obstacle', 'hindernis', 'barrier'])
+
+    xml_path = os.path.abspath(FREENOVE_XML)
+    if _scene_has_wall:
+        from src.body.terrain import inject_wall
+        with open(xml_path) as xf:
+            xml_string = xf.read()
+        xml_string = inject_wall(xml_string, distance=0.8)
+        model = mujoco.MjModel.from_xml_string(xml_string)
+        print(f'  Wall: injected at x=0.8m (visible in render)')
+    else:
+        model = mujoco.MjModel.from_xml_path(xml_path)
     data = mujoco.MjData(model)
     renderer = mujoco.Renderer(model, args.height, args.width)
+
+    # Auto-detect camera azimuth for wall scenes
+    # Wall scenes: camera at 30° (front-right) so wall is visible ahead
+    # Normal scenes: camera at 150° (rear-left, classic follow cam)
+    if args.azimuth is None:
+        if _scene_has_wall:
+            args.azimuth = 30.0   # Front-right: see robot AND wall
+            args.elevation = -25  # Slightly higher for overview
+            args.distance = 0.8   # Wider to show wall context
+        else:
+            args.azimuth = 150.0  # Classic rear follow cam
 
     cam = mujoco.MjvCamera()
     cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
@@ -225,6 +262,8 @@ def main():
     cam.azimuth = args.azimuth
     cam.elevation = args.elevation
     cam.lookat[:] = [0, 0, 0.08]
+    print(f'  Camera: az={args.azimuth:.0f} el={args.elevation:.0f} dist={args.distance:.1f}'
+          f'{" (wall-aware)" if _scene_has_wall else ""}')
 
     opt = mujoco.MjvOption()
     opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTFORCE] = False
@@ -238,7 +277,7 @@ def main():
     dash = None
     try:
         from src.viz.go2_dashboard import Go2DashboardOverlay
-        # v0.4.2: Real population sizes from FLOG meta or defaults
+        # v0.4.3: Real population sizes from FLOG meta or defaults
         flog_pops = flog.meta.get('population_sizes', None)
         freenove_pops = flog_pops if flog_pops else {'n_input': 48, 'n_granule': 106, 'n_golgi': 18,
                          'n_purkinje': 24, 'n_dcn': 24, 'n_output': 12, 'n_total': 232}
@@ -259,7 +298,7 @@ def main():
         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     # Title card
-    render_title_card(args.width, args.height, args.fps, 3.0, ffmpeg.stdin)
+    render_title_card(args.width, args.height, args.fps, 3.0, ffmpeg.stdin, meta=flog.meta)
 
     # Main render
     t0 = time.time()
@@ -290,6 +329,11 @@ def main():
             stats['current_distance'] = live_dist
             if live_dist > stats.get('max_distance', 0.0):
                 stats['max_distance'] = live_dist
+            # Pass FLOG meta for dynamic header (creature name, version, scene)
+            stats['creature'] = flog.meta.get('creature', 'freenove').capitalize()
+            stats['version'] = flog.meta.get('version', 'v0.4.3')
+            stats['task'] = flog.meta.get('task', scene_text or 'flat')
+            stats['total_steps'] = flog.meta.get('steps', 20000)
             cam_p = {'azimuth': args.azimuth, 'elevation': args.elevation,
                      'distance': args.distance,
                      'lookat': [float(qpos[0]), float(qpos[1]), float(qpos[2])]}

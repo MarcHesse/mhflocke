@@ -1,5 +1,5 @@
 """
-MH-FLOCKE — Go2 Dashboard v0.4.2
+MH-FLOCKE — Go2 Dashboard v0.4.3
 ========================================
 PIL-based dashboard overlay for video rendering.
 """
@@ -686,7 +686,8 @@ def _brand_bar(w, h, stats):
     total = stats.get('total_steps', 50000)
 
     draw.text((10, 4), 'MH-FLOCKE', fill=(*CYAN, 240), font=_f(17, True))
-    draw.text((130, 6), 'Level 15 v0.4.2', fill=(*GREY, 180), font=_f(13))
+    version = stats.get('version', 'v0.4.3')
+    draw.text((130, 6), f'Level 15 {version}', fill=(*GREY, 180), font=_f(13))
 
     creature = stats.get('creature', 'Go2')
     task = stats.get('task', '')
@@ -990,9 +991,10 @@ class Go2DashboardOverlay:
         # ── BRAND BAR (top left) ──
         brand_w = min(int(550 * self._scale), self.w - rw - 30)
         brand_stats = dict(stats)
-        brand_stats['creature'] = 'Go2'
-        brand_stats['task'] = stats.get('terrain_type', 'flat meadow')
-        brand_stats['total_steps'] = 50000
+        brand_stats['creature'] = stats.get('creature', 'Freenove')
+        brand_stats['task'] = stats.get('task', stats.get('terrain_type', 'flat'))
+        brand_stats['total_steps'] = stats.get('total_steps', 50000)
+        brand_stats['version'] = stats.get('version', 'v0.4.3')
         w_brand = _brand_bar(brand_w, 28, brand_stats)
         canvas.paste(w_brand, (10, 10), w_brand)
         w_brand.close()
