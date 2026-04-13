@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-MH-FLOCKE — Freenove Robot Dog Bridge v4.0
+MH-FLOCKE — Freenove Robot Dog Bridge v4.1
 =============================================
+v4.1: Hardware servo compensation (Issue #105):
+      - HARDWARE_CORRECTION_GAIN ×5 amplification for servo dead band
+      - HARDWARE_CPG_FREQ_SCALE ×0.7 for servo tracking
+      - Obstacle reflexes: CPG-kill <15cm, inhibition <50cm
+      - Per-population Izhikevich parameters (Issue #104)
 v4.0: UNIFIED CODEBASE — uses src/brain/ directly (same as simulator).
       No more separate NumPy SNN. Same SNNController, same CerebellarLearning,
       same brain_persistence on Pi AND in MuJoCo. PyTorch on Pi.
-v3.0: Cerebellar learning on real hardware (NumPy, deprecated).
-v2.5: IMU integration (MPU6050).
 
 Usage:
     python3 freenove_bridge.py --gait walk --snn --verbose --duration 300
@@ -37,6 +40,30 @@ FREENOVE_SEARCH_PATHS = [
 ]
 CONTROL_HZ = 50
 CONTROL_DT = 1.0 / CONTROL_HZ
+
+# === Hardware Servo Compensation (Issue #105) ===
+# Strategy 1: Amplify cerebellar corrections to overcome servo dead band (~3°).
+# Corrections of 0.01 (3°) are invisible to SG90; ×5 = 0.05 (15°) = visible.
+# Biology: Reticulospinal tract amplifies cerebellar DCN output for
+# spinal motor neurons — the gain is set by brainstem circuits.
+HARDWARE_CORRECTION_GAIN = 5.0
+
+# Strategy 3: Slow CPG for servo tracking capability.
+# SG90: ~60°/100ms at no load. At CPG 0.8Hz, servos can barely track.
+# ×0.7 → 0.56Hz gives servos 40% more time per cycle.
+# Biology: Animals naturally slow down on difficult terrain.
+HARDWARE_CPG_FREQ_SCALE = 0.7
+
+# === Obstacle Reflexes (brainstem, not learned) ===
+# These are HARDWIRED reflexes that the cerebellum calibrates but
+# cannot override. Like a dog flinching when its nose touches a wall.
+# Biology: Trigeminal reflex arc (face→brainstem→motor, ~10ms latency)
+# v0.5.0: Tightened from 15/50/8cm to 10/30/5cm.
+# The reflex prevents DAMAGE, not CONTACT. The robot needs to bump
+# its nose to learn — the old distances were too conservative.
+REFLEX_STOP_DISTANCE_CM = 10.0      # CPG kill — full stop
+REFLEX_SLOW_DISTANCE_CM = 30.0      # Graded CPG inhibition
+REFLEX_REVERSE_DISTANCE_CM = 5.0    # Reverse CPG — back up
 DASHBOARD_PATHS = [
     os.path.join(SCRIPT_DIR, '..', 'creatures', 'freenove', 'dashboard'),
     os.path.join(HOME_DIR, 'dashboard'),
@@ -76,14 +103,25 @@ def get_servo_angles(points):
 class FreenoveCPG:
     def __init__(self, speed=1.0, height=99):
         self.height=height; self.stride=12; self.lift=6
-        self.frequency=0.8*speed; self._phase=90.0
+        self.frequency=0.8*speed*HARDWARE_CPG_FREQ_SCALE; self._phase=90.0
+        self._inhibition = 1.0  # 1.0=full, 0.0=stopped
+        self._reverse = False   # True = walk backward
+    def set_inhibition(self, level):
+        """Set CPG output inhibition. 0.0=stopped, 1.0=full stride."""
+        self._inhibition = max(0.0, min(1.0, level))
+    def set_reverse(self, reverse):
+        """Set reverse walking mode."""
+        self._reverse = reverse
     def compute(self, dt=None):
         if dt is None: dt=CONTROL_DT
-        self._phase += 360.0*self.frequency*dt; h=self.height
+        direction = -1.0 if self._reverse else 1.0
+        self._phase += 360.0*self.frequency*dt*direction; h=self.height
         pr=self._phase*math.pi/180.0; po=(self._phase+180.0)*math.pi/180.0
-        X1=self.stride*math.cos(pr); Y1=self.lift*math.sin(pr)+h
+        stride = self.stride * self._inhibition
+        lift = self.lift * self._inhibition
+        X1=stride*math.cos(pr); Y1=lift*math.sin(pr)+h
         if Y1>h: Y1=h
-        X2=self.stride*math.cos(po); Y2=self.lift*math.sin(po)+h
+        X2=stride*math.cos(po); Y2=lift*math.sin(po)+h
         if Y2>h: Y2=h
         return [[X1+10,Y1,10],[X2+10,Y2,10],[X1+10,Y1,-10],[X2+10,Y2,-10]]
     def get_phase_input(self):
@@ -159,6 +197,8 @@ class UltrasonicReader:
         self.gpio = None
         self.distance_cm = self.MAX_RANGE_CM
         self._available = False
+        self._history = []  # Moving median filter (5 samples)
+        self._filter_size = 5
         try:
             import RPi.GPIO as GPIO
             self.gpio = GPIO
@@ -168,18 +208,12 @@ class UltrasonicReader:
             GPIO.output(self.TRIG_PIN, False)
             time.sleep(0.1)  # Settle
             self._available = True
-            print(f'  Ultrasonic: HC-SR04 initialized (TRIG={self.TRIG_PIN}, ECHO={self.ECHO_PIN})')
+            print(f'  Ultrasonic: HC-SR04 initialized (TRIG={self.TRIG_PIN}, ECHO={self.ECHO_PIN}, median={self._filter_size})')
         except Exception as e:
             print(f'  Ultrasonic: not available ({e}) — using max range')
 
-    def read(self) -> float:
-        """
-        Trigger measurement and return distance in meters.
-
-        Returns:
-            Distance in meters. Returns MAX_RANGE (4.0m) if no echo
-            or sensor unavailable.
-        """
+    def _read_raw(self) -> float:
+        """Single raw measurement in meters."""
         if not self._available or self.gpio is None:
             return self.MAX_RANGE_CM / 100.0
 
@@ -217,6 +251,22 @@ class UltrasonicReader:
 
         except Exception:
             return self.MAX_RANGE_CM / 100.0
+
+    def read(self) -> float:
+        """
+        Filtered measurement in meters (moving median, 5 samples).
+
+        Biology: Sensory neurons integrate over time — a single spike
+        doesn't trigger a response, but a sustained signal does.
+        The median filter removes outliers from beam reflections
+        off the floor or nearby objects outside the target.
+        """
+        raw = self._read_raw()
+        self._history.append(raw)
+        if len(self._history) > self._filter_size:
+            self._history.pop(0)
+        # Median: sort and take middle value (robust against outliers)
+        return sorted(self._history)[len(self._history) // 2]
 
     def cleanup(self):
         """Release GPIO pins."""
@@ -409,8 +459,22 @@ def build_freenove_snn(device='cpu'):
         'purkinje_cells', 'dcn',
     }
 
+    # Per-population Izhikevich parameters (Issue #104)
+    # These enable biologically accurate firing dynamics:
+    # - DCN: Rebound Burst → 5-10x stronger corrections
+    # - GoC: Intrinsically Bursting / Pacemaker → stable sparseness
+    # - PkC: Chattering → baseline Simple Spike rate
+    # - Output: Fast Spiking → quick motor response
+    # Ref: Izhikevich 2003, Table 2
+    snn.set_izhikevich_params('granule_cells', a=0.02, b=0.2, c=-65, d=8)   # RS
+    snn.set_izhikevich_params('golgi_cells',   a=0.02, b=0.2, c=-55, d=4)   # IB
+    snn.set_izhikevich_params('purkinje_cells', a=0.02, b=0.2, c=-50, d=2)  # CH
+    snn.set_izhikevich_params('dcn',           a=0.03, b=0.25, c=-52, d=0)  # Rebound
+    snn.set_izhikevich_params('output',        a=0.1,  b=0.2, c=-65, d=2)   # FS
+
     print(f'  SNN: {total_neurons} neurons, {snn._n_synapses} synapses')
     print(f'  Cerebellum: GrC={n_granule} GoC={n_golgi} PkC={n_purkinje} DCN={n_dcn}')
+    print(f'  Izhikevich: DCN=Rebound, GoC=IB, PkC=CH, Output=FS')
 
     return snn, cb
 
@@ -452,24 +516,37 @@ def main():
     import torch
     import numpy as np
 
-    parser = argparse.ArgumentParser(description='MH-FLOCKE Freenove Bridge v4.0')
+    parser = argparse.ArgumentParser(description='MH-FLOCKE Freenove Bridge v4.1')
     parser.add_argument('--gait', default='stand', choices=['stand','stop','walk'])
     parser.add_argument('--speed', type=float, default=1.0)
     parser.add_argument('--duration', type=float, default=30.0)
+    parser.add_argument('--steps', type=int, default=0,
+                        help='Fixed number of steps (overrides --duration). '
+                             'Use for fair A/B comparison: both runs do exactly the same number of servo updates.')
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--snn', action='store_true', help='Enable SNN + Cerebellum')
     parser.add_argument('--best', action='store_true', help='Load best brain')
     parser.add_argument('--fresh', action='store_true', help='Start fresh')
     parser.add_argument('--dashboard', action='store_true')
     parser.add_argument('--verbose', action='store_true')
+    parser.add_argument('--log-csv', type=str, default=None,
+                        help='Log sensor data to CSV file for A/B comparison')
     args = parser.parse_args()
 
     print(f'\n{"="*60}')
-    print(f'  MH-FLOCKE — Freenove Bridge v4.0 (unified codebase)')
+    print(f'  MH-FLOCKE — Freenove Bridge v4.1 (unified + servo comp)')
     print(f'  Same SNN + Cerebellum as simulator (PyTorch)')
     print(f'  Gait: {args.gait}  Speed: {args.speed}  Duration: {args.duration}s')
+    print(f'  CPG freq scale: {HARDWARE_CPG_FREQ_SCALE}  Correction gain: {HARDWARE_CORRECTION_GAIN}x')
     print(f'  SNN: {"ON" if args.snn else "OFF"}  Dashboard: {"ON" if args.dashboard else "OFF"}')
     print(f'{"="*60}\n')
+
+    # CSV logger for A/B comparison experiments
+    csv_file = None
+    if args.log_csv:
+        csv_file = open(args.log_csv, 'w')
+        csv_file.write('step,time,obstacle_dist,cpg_weight,competence,correction,da,pitch,roll,upright\n')
+        print(f'  CSV log: {args.log_csv}')
 
     imu = IMUReader()
     ultrasonic = UltrasonicReader()
@@ -561,7 +638,7 @@ def main():
                 'actor_competence': gate.actor_competence,
                 'cpg_weight': gate.cpg_weight,
                 'step': step,
-                'version': 'v4.0',
+                'version': 'v4.1',
             }
             torch.save(state, brain_path)
             print(f'  Brain saved: {brain_path} (step {step}, '
@@ -587,13 +664,57 @@ def main():
 
     t_start=time.time(); t_loop=time.time()
     prev_servo=None; da_signal=0.5
+    max_steps = args.steps if args.steps > 0 else 999999999
+    max_duration = 9999 if args.steps > 0 else args.duration
 
     try:
-        while (time.time()-t_start) < args.duration:
+        while (time.time()-t_start) < max_duration and step < max_steps:
             t_step=time.time()
             imu_data = imu.update()
             obstacle_dist = ultrasonic.read()
+            obstacle_dist_cm = obstacle_dist * 100.0
+
+            # === OBSTACLE REFLEXES (brainstem, hardwired) ===
+            # Priority: reverse > stop > slow > normal
+            # The cerebellum calibrates WHEN and HOW MUCH, but these
+            # reflexes fire regardless of SNN state.
+            # Biology: Trigeminal reflex arc (face contact → brainstem
+            # → immediate motor response, ~10ms latency in mammals)
+            reflex_active = False
+            if obstacle_dist_cm < REFLEX_REVERSE_DISTANCE_CM and obstacle_dist_cm > 0:
+                # CONTACT: Reverse CPG — back up
+                cpg.set_inhibition(0.6)
+                cpg.set_reverse(True)
+                reflex_active = True
+            elif obstacle_dist_cm < REFLEX_STOP_DISTANCE_CM:
+                # COLLISION IMMINENT: CPG kill — full stop
+                cpg.set_inhibition(0.0)
+                cpg.set_reverse(False)
+                reflex_active = True
+            elif obstacle_dist_cm < REFLEX_SLOW_DISTANCE_CM:
+                # DANGER: Graded CPG inhibition — slow down proportionally
+                slow_factor = (obstacle_dist_cm - REFLEX_STOP_DISTANCE_CM) / (REFLEX_SLOW_DISTANCE_CM - REFLEX_STOP_DISTANCE_CM)
+                cpg.set_inhibition(max(0.2, slow_factor))
+                cpg.set_reverse(False)
+                reflex_active = True
+            else:
+                # CLEAR: Full CPG output
+                cpg.set_inhibition(1.0)
+                cpg.set_reverse(False)
+
             cpg_points = cpg.compute(CONTROL_DT)
+
+            # Issue #108: Obstacle Avoidance Turn Reflex
+            # Asymmetric Z-offset on CPG points → robot turns away.
+            # Same logic as train_v032.py _reflex_turn_steering.
+            # Z > 0 = left side, Z < 0 = right side.
+            # Positive Z-offset on all legs → robot turns left.
+            _REFLEX_TURN_GAIN_HW = 5.0  # mm of Z-offset at max proximity
+            if reflex_active and not cpg._reverse:
+                _turn_prox = max(0.0, 1.0 - obstacle_dist_cm / REFLEX_SLOW_DISTANCE_CM)
+                _turn_z = _turn_prox * _REFLEX_TURN_GAIN_HW
+                for i in range(4):
+                    cpg_points[i][2] += _turn_z  # shift all legs laterally
 
             if args.snn and snn and gate:
                 sensory = encode_sensory(prev_servo, cpg.get_phase_input(), step, imu_data,
@@ -646,6 +767,7 @@ def main():
                         'step': step,
                         'velocity': np.array([0.05, 0.0, 0.0]),
                         'angular_velocity': np.array([0.0, 0.0, 0.0]),
+                        'obstacle_distance': obstacle_dist,
                     }
                     if prev_servo:
                         n_act = min(12, len(prev_servo))
@@ -660,14 +782,15 @@ def main():
                 gate.update(is_upright=is_upright, velocity=0.1)
                 final_points = gate.blend(cpg_points, actor_output)
 
-                # Apply cerebellar corrections
+                # Apply cerebellar corrections WITH hardware amplification
+                # Strategy 1 (Issue #105): ×5 gain to overcome servo dead band
                 if cb_corr is not None:
                     for leg_idx in range(4):
                         base = leg_idx * 3
                         if base + 2 < len(cb_corr):
-                            final_points[leg_idx][0] += cb_corr[base] * 3.0
-                            final_points[leg_idx][1] += cb_corr[base+1] * 2.0
-                            final_points[leg_idx][2] += cb_corr[base+2] * 1.0
+                            final_points[leg_idx][0] += cb_corr[base] * 3.0 * HARDWARE_CORRECTION_GAIN
+                            final_points[leg_idx][1] += cb_corr[base+1] * 2.0 * HARDWARE_CORRECTION_GAIN
+                            final_points[leg_idx][2] += cb_corr[base+2] * 1.0 * HARDWARE_CORRECTION_GAIN
             else:
                 final_points = cpg_points
 
@@ -688,14 +811,31 @@ def main():
                     cf = cb.stats.get('cf_magnitude', 0.0) if cb else 0.0
                     corr = cb.stats.get('correction_magnitude', 0.0) if cb else 0.0
                     pw = cb.stats.get('pf_pkc_mean_weight', 0.0) if cb else 0.0
+                    reb = cb.stats.get('dcn_rebound_strength', 0.0) if cb else 0.0
+                    rfx = 'REV' if cpg._reverse else ('STOP' if cpg._inhibition < 0.01 else
+                          (f'SLOW{cpg._inhibition:.0%}' if cpg._inhibition < 1.0 else ''))
                     print(f'  [{step:5d}] {ms:.1f}ms  CPG:{gs["cpg_weight"]:.0%}  '
                           f'Act:{gs["actor_competence"]:.3f}  DA:{da_signal:.2f}  '
-                          f'FR:{fr:.3f}  CF:{cf:.3f}  corr:{corr:.4f}  w:{pw:.4f}  '
+                          f'FR:{fr:.3f}  CF:{cf:.3f}  corr:{corr:.4f}  reb:{reb:.3f}  '
                           f'P:{imu_data["pitch"]:+.1f}  '
-                          f'R:{imu_data["roll"]:+.1f}  Up:{imu_data["upright"]:.2f}')
+                          f'R:{imu_data["roll"]:+.1f}  Up:{imu_data["upright"]:.2f}  '
+                          f'OD:{obstacle_dist:.2f}m {rfx}')
                 else:
                     print(f'  [{step:5d}] {ms:.1f}ms  CPG only  '
-                          f'P:{imu_data["pitch"]:+.1f}  R:{imu_data["roll"]:+.1f}')
+                          f'P:{imu_data["pitch"]:+.1f}  R:{imu_data["roll"]:+.1f}  '
+                          f'OD:{obstacle_dist:.2f}m')
+
+            # CSV logging — every 10 steps for smooth curves
+            if csv_file and step % 10 == 0:
+                t_elapsed = time.time() - t_start
+                _csv_cpg = gate.get_stats()['cpg_weight'] if gate else 1.0
+                _csv_comp = gate.get_stats()['actor_competence'] if gate else 0.0
+                _csv_corr = cb.stats.get('correction_magnitude', 0.0) if cb else 0.0
+                _csv_da = da_signal if args.snn else 0.0
+                csv_file.write(f'{step},{t_elapsed:.3f},{obstacle_dist:.4f},'
+                               f'{_csv_cpg:.4f},{_csv_comp:.4f},{_csv_corr:.6f},'
+                               f'{_csv_da:.4f},{imu_data["pitch"]:.2f},'
+                               f'{imu_data["roll"]:.2f},{imu_data["upright"]:.4f}\n')
 
 
             # Dashboard update — real SNN data
@@ -736,6 +876,9 @@ def main():
     print(f'\n  Stopping... ({step} steps in {time.time()-t_start:.1f}s)')
     if servo: set_legs(servo, standing)
     ultrasonic.cleanup()
+    if csv_file:
+        csv_file.close()
+        print(f'  CSV log saved: {args.log_csv} ({step // 10} data points)')
     if args.snn and gate:
         gs=gate.get_stats()
         print(f'  Final: competence={gs["actor_competence"]:.3f}  CPG={gs["cpg_weight"]:.0%}')

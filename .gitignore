@@ -23,14 +23,17 @@ Desktop.ini
 .env
 
 # Training outputs (generated, not source)
-creatures/*/v034_*/
+creatures/*/v0*_*/
 creatures/*/brain/
 checkpoints/
+output/
 
 # Media (generated from FLOGs)
 *.mp4
 *.wav
 *.mp3
+
+# Model weights (generated, not source)
 *.pt
 
 # Temporary files

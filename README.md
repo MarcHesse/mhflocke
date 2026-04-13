@@ -6,7 +6,7 @@
 
 **Biologically Grounded Embodied Cognition for Quadruped Locomotion Learning**
 
-A simulated quadruped learns to walk through a 15-step closed-loop cognitive architecture integrating spiking neural networks, cerebellar forward models, central pattern generators, embodied emotions, and reward-modulated spike-timing-dependent plasticity — no end-to-end RL required.
+A simulated quadruped learns to walk through a 15-step closed-loop cognitive architecture integrating Izhikevich spiking neural networks, cerebellar forward models with DCN rebound bursting, central pattern generators, embodied emotions, and reward-modulated spike-timing-dependent plasticity — no end-to-end RL required.
 
 ## Key Results (10-Seed Validation, Unitree Go2)
 
@@ -59,8 +59,10 @@ The Raspberry Pi 4 runs the **same SNN and cerebellum code** as the MuJoCo simul
 
 - Kit: [Freenove FNK0050](https://www.freenove.com/fnk0050) (~100€)
 - Compute: Raspberry Pi 4 (2GB+ RAM)
-- 12 SG90 servos, PCA9685 driver, MPU6050 IMU
-- SNN: 232 neurons (48 MF + 106 GrC + 18 GoC + 24 PkC + 24 DCN + 12 OUT)
+- 12 SG90 servos, PCA9685 driver, MPU6050 IMU, HC-SR04 ultrasonic
+- SNN: 232 Izhikevich neurons (48 MF + 106 GrC + 18 GoC + 24 PkC + 24 DCN + 12 OUT)
+- Per-population neuron dynamics: Regular Spiking, Intrinsically Bursting, Chattering, Rebound Burst, Fast Spiking
+- Obstacle reflexes: hardware-matched brainstem-level STOP/SLOW/REVERSE/TURN
 - Control loop: 29Hz with PyTorch CPU-only
 
 ### Running on Pi
@@ -105,15 +107,20 @@ COMBINED REWARD → R-STDP LEARNING → SYNAPTOGENESIS →
 HEBBIAN → DREAM MODE → NEUROMODULATION
 ```
 
-The architecture operates across nested timescales:
+The architecture operates across nested timescales, following the biological hierarchy of motor control:
 
-- **Spinal reflexes** (every step) — posture maintenance, stretch reflexes
+- **Spinal reflexes** (every step) — posture maintenance, stretch reflexes, muscle tone
+- **Brainstem reflexes** — obstacle avoidance (stop, slow, reverse, turn), righting reflexes
 - **Central Pattern Generator** — innate gait patterns, competence-gated blending with learned actor
-- **Cerebellar forward model** — Marr-Albus-Ito framework, prediction error-driven motor corrections
-- **SNN with R-STDP** — 5000+ Izhikevich neurons, reward-modulated spike-timing-dependent plasticity
+- **Cerebellar forward model** — Marr-Albus-Ito framework with DCN rebound bursting, prediction error-driven motor corrections via reticulospinal pathway
+- **SNN with R-STDP** — 5000+ Izhikevich neurons with per-population dynamics, reward-modulated spike-timing-dependent plasticity
 - **Cognitive layers** — Global Workspace Theory, embodied emotions, episodic memory, motivational drives
 
 The CPG provides a locomotion prior from step 1. As the SNN actor learns, a competence gate smoothly transitions from 90% CPG to 40% CPG / 60% actor. The creature walks immediately and improves through learning — no random exploration phase required.
+
+### Roadmap: Spatial Planning
+
+The current architecture implements biological layers 1-3 (spinal, brainstem, cerebellum). We are working toward a spatial planning layer inspired by hippocampal place cells and prefrontal cortex working memory. This will enable the robot to build a cognitive map of its environment and plan paths around obstacles — moving from reactive avoidance to goal-directed navigation.
 
 ## Ablation Design
 
@@ -211,23 +218,7 @@ Full documentation with architecture details, API references, mathematical formu
 
 ## Changelog
 
-### v0.4.2 (2026-04-11)
-- **Freenove sim-to-real**: Unified codebase — Pi runs same `src/brain/` as simulator (PyTorch CPU-only). Brain trained in MuJoCo transfers directly to Raspberry Pi 4.
-- **Bridge v4.0**: `freenove_bridge.py` imports `src/brain/` directly. No separate SNN implementation for hardware.
-- **`topology.py`**: Shared cerebellar population computation without MuJoCo dependency. Both simulator and Pi use the same function.
-- **Brain3D visualization**: Population-aware layout driven by actual SNN topology and training data. Layer labels show per-population neuron counts.
-- **FLOG extended**: Training logs store `population_sizes` metadata (per-population neuron counts) for correct visualization.
-- **Live dashboard**: Web-based real-time display of all 6 cerebellar populations with live spike activity on Pi hardware.
-- **Pi deployment**: Complete guide (`docs/FREENOVE_PI_DEPLOY.md`), `requirements-pi.txt`, calibration tool, servo config.
-- **Renderers updated**: Both Freenove and Go2 renderers read population topology from FLOG metadata.
-
-### v0.4.0 (2026-04-06)
-- Initial Freenove integration: Bridge v2.5, IMU support, 8.2m first real-world run
-- Brain persistence across sessions (18,746 steps over 3 sessions)
-
-### v0.3.4 (2026-03-28)
-- Go2 50k training: 8.222m, 0 falls, actor competence 0.847
-- 10-seed ablation: B1 45.15±0.67m vs PPO 12.83±7.78m
+See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
 
 ## Acknowledgments
 

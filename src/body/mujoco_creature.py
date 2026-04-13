@@ -1,9 +1,10 @@
 """
-MH-FLOCKE — MuJoCo Creature v0.4.3
+MH-FLOCKE — MuJoCo Creature v0.5.0
 ========================================
 SNN-MuJoCo bridge: population coding, sense-think-act cycle.
 
-v0.4.3: Ultrasonic sensor, additive CPG blending.
+v0.5.0: Per-population Izhikevich parameters (Issue #104).
+  v0.4.3: Ultrasonic sensor, additive CPG blending.
   v0.4.2: Scalable cerebellar architecture for hardware transfer.
   - profile.json drives SNN topology (n_input, n_hidden, n_output)
   - Cerebellar populations scale proportionally for small neuron counts
@@ -1035,6 +1036,24 @@ class MuJoCoCreatureBuilder:
         snn._thresholds[dcn_ids] = 1.0
         snn._thresholds[out_ids] = 0.4
         snn._hidden_tonic_current = 0.015
+
+        # === Per-population Izhikevich parameters (Issue #104) ===
+        # Enable biologically accurate firing dynamics per cell type.
+        # Must match freenove_bridge.py build_freenove_snn() exactly
+        # so sim-trained brains transfer correctly to hardware.
+        # Ref: Izhikevich 2003, Table 2
+        snn.set_izhikevich_params('granule_cells', a=0.02, b=0.2, c=-65, d=8)   # RS
+        snn.set_izhikevich_params('golgi_cells',   a=0.02, b=0.2, c=-55, d=4)   # IB
+        snn.set_izhikevich_params('purkinje_cells', a=0.02, b=0.2, c=-50, d=2)  # CH
+        snn.set_izhikevich_params('dcn',           a=0.03, b=0.25, c=-52, d=0)  # Rebound
+        snn.set_izhikevich_params('output',        a=0.1,  b=0.2, c=-65, d=2)   # FS
+
+        # Protect cerebellar populations from R-STDP
+        # (cerebellar learning is handled by CerebellarLearning module)
+        snn.protected_populations = {
+            'mossy_fibers', 'granule_cells', 'golgi_cells',
+            'purkinje_cells', 'dcn',
+        }
 
         snn._rebuild_sparse_weights()
 

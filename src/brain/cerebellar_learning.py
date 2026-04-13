@@ -1,7 +1,12 @@
 """
-MH-FLOCKE — Cerebellar Learning v0.4.3
+MH-FLOCKE — Cerebellar Learning v0.5.0
 ========================================
 Marr-Albus-Ito cerebellar forward model for motor correction.
+
+v0.5.0: DCN Rebound Burst Detection (Issue #104).
+         After PkC inhibition release, DCN fires a burst that produces
+         5-10x stronger corrections than the v0.4.x tonic model.
+         Ref: Gauck & Jaeger 2000, Aizenman & Bhatt 2003.
 """
 
 import torch
@@ -580,6 +585,16 @@ class CerebellarLearning:
         # Last DCN output for compute_corrections
         self._last_dcn: Optional[np.ndarray] = None
 
+        # DCN Rebound Burst state (Issue #104)
+        # Track PkC inhibition level from previous step.
+        # When inhibition drops (PkC stops firing after CF), DCN fires
+        # a rebound burst — the biological mechanism for strong, 
+        # time-locked motor corrections.
+        # Ref: Gauck & Jaeger 2000, Aizenman & Bhatt 2003
+        self._prev_pkc_inhibition: Optional[torch.Tensor] = None
+        self._rebound_burst: Optional[torch.Tensor] = None
+        self._rebound_decay = 0.7  # Burst decays over ~3 steps
+
         # Stats for dashboard
         self.stats = {
             'grc_sparseness': 0.0,
@@ -589,6 +604,7 @@ class CerebellarLearning:
             'ltp_applied': 0.0,
             'correction_magnitude': 0.0,
             'dcn_activity': 0.0,
+            'dcn_rebound_strength': 0.0,
         }
 
         self._step = 0
@@ -738,27 +754,34 @@ class CerebellarLearning:
         self.stats['pf_pkc_mean_weight'] = float(
             self._pf_pkc_weights.sum() / max(1, self._pf_pkc_mask.sum()))
 
-        # 8. DCN output: tonic - PkC inhibition
+        # 8. DCN output: tonic - PkC inhibition + REBOUND BURST
         #
-        # BUG FIX (Issue #103): The original used only PkC spike activity
-        # (self._pkc_layer.activity) which is an EMA of spikes. Since PkC
-        # rarely fire spikes (pf_to_pkc is too weak for V_threshold=1.0),
-        # activity ≈ 0 for all PkC → DCN = tonic(0.5) for all → 
-        # push - pull = 0 → corrections = 0. ALWAYS.
+        # v0.5.0 (Issue #104): DCN Rebound Burst Detection
+        # ================================================
+        # The v0.4.x model used: DCN = tonic - PkC_graded
+        # This produced continuous, weak corrections (~0.01-0.03).
         #
-        # The fix: Use the PkC COMPARTMENT activity (V_apical + V_basal)
-        # as continuous inhibition, not just binary spikes. This is more
-        # biologically accurate: PkC inhibit DCN via graded synaptic
-        # release, not just spike-triggered release.
+        # Real DCN neurons (Gauck & Jaeger 2000, Aizenman & Bhatt 2003)
+        # fire POST-INHIBITORY REBOUND BURSTS when PkC inhibition is
+        # released. The burst is 5-10x stronger than tonic firing and
+        # precisely time-locked to the climbing fiber signal.
         #
-        # Biology: PkC→DCN synapses are GABAergic (inhibitory) and show
-        # graded release proportional to dendritic calcium + membrane
-        # potential. The DCN fires at its tonic rate minus the PkC
-        # inhibition. When CF activates specific PkC → those PkC have
-        # high calcium + basal voltage → stronger inhibition → their
-        # DCN partner goes below tonic → asymmetric correction.
+        # Mechanism:
+        #   1. CF fires → PkC calcium spike → strong PkC inhibition
+        #   2. Calcium decays → PkC inhibition drops
+        #   3. DCN rebounds: fires BURST (not just returns to tonic)
+        #   4. Burst = strong correction signal, naturally time-locked
+        #
+        # The rebound is driven by T-type calcium channels in DCN
+        # neurons (de-inactivated by hyperpolarization from PkC).
+        # With Izhikevich LTS params (a=0.03, b=0.25, c=-52, d=0),
+        # this happens automatically in the SNN dynamics. But we also
+        # detect it explicitly here for the correction computation,
+        # because the SNN step() output is binary spikes — we need
+        # graded corrections.
         #
         # Ref: Gauck & Jaeger 2000 — DCN rebound from PkC inhibition
+        # Ref: Aizenman & Bhatt 2003 — Post-inhibitory rebound in DCN
         pkc_state = self._pkc_layer.get_compartment_state()
         # Graded PkC output: combine apical (PF drive) + calcium (CF drive)
         # Calcium is the key differentiator — it's high only where CF fires
@@ -768,12 +791,37 @@ class CerebellarLearning:
         # Normalize to 0..1 range
         pkc_graded = pkc_graded.clamp(0.0, 1.5) / 1.5
 
-        dcn_out = self.config.dcn_tonic - pkc_graded * 0.8
-        dcn_out = dcn_out.clamp(-1.0, 1.0)
+        # --- REBOUND BURST DETECTION ---
+        # Detect when PkC inhibition DROPS (= CF-triggered calcium fading)
+        # rebound = max(0, prev_inhibition - current_inhibition)
+        # This is positive only when PkC just stopped inhibiting DCN.
+        rebound = torch.zeros_like(pkc_graded)
+        if self._prev_pkc_inhibition is not None:
+            inhibition_drop = self._prev_pkc_inhibition - pkc_graded
+            rebound = torch.clamp(inhibition_drop, 0.0, 1.0)
+
+        # Accumulate rebound burst (persists ~3 steps, like real T-type Ca burst)
+        if self._rebound_burst is None:
+            self._rebound_burst = torch.zeros_like(pkc_graded)
+        self._rebound_burst = self._rebound_burst * self._rebound_decay + rebound
+
+        # Store current inhibition for next step
+        self._prev_pkc_inhibition = pkc_graded.clone().detach()
+
+        # DCN output: tonic - graded_inhibition + REBOUND_BURST
+        # The rebound burst is the KEY difference from v0.4.x:
+        # With burst gain=5.0, a 0.1 inhibition drop produces 0.5 burst
+        # → push-pull difference of ~0.5 instead of ~0.01
+        REBOUND_BURST_GAIN = 5.0
+        dcn_out = (self.config.dcn_tonic
+                   - pkc_graded * 0.8
+                   + self._rebound_burst * REBOUND_BURST_GAIN)
+        dcn_out = dcn_out.clamp(-1.0, 1.5)  # allow above 1.0 during burst
 
         self.stats['dcn_activity'] = float(dcn_out.abs().mean())
         self.stats['dcn_push_pull_diff'] = float(
             (dcn_out[0::2] - dcn_out[1::2]).abs().mean()) if len(dcn_out) > 1 else 0.0
+        self.stats['dcn_rebound_strength'] = float(self._rebound_burst.abs().mean())
         self._last_dcn = dcn_out.detach().cpu().numpy()
 
         # PkC compartment stats for dashboard (reuse pkc_state from above)
@@ -869,6 +917,9 @@ class CerebellarLearning:
         if self._pkc_layer is not None:
             self._pkc_layer.reset()
         self._last_dcn = None
+        # Reset rebound burst state (episode-specific)
+        self._prev_pkc_inhibition = None
+        self._rebound_burst = None
 
     def get_snn_mix(self) -> float:
         """Current SNN correction mixing level (0..snn_mix_end)."""

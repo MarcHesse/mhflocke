@@ -549,11 +549,12 @@ def main():
         'purkinje_cells', 'dcn',
     }
     creature.brain.config.pci_interval = args.pci_interval
-    # Disable periodic dreaming during embodied training (too expensive).
-    # Dreams happen between ball episodes instead (Issue #76d).
-    # Default dream_interval=100 caused 400+ dream cycles per 50k run
-    # with 3900ms/step spikes from synaptogenesis consolidation.
-    creature.brain.config.dream_interval = 0
+    # Dream consolidation: enabled for wall training (Issue #103).
+    # Periodic dreams at interval=500 (~every 16s at 30ms/step).
+    # PLUS: explicit dream after each wall hit for obstacle pattern consolidation.
+    # Previous: interval=0 (disabled) or 100 (too expensive at 400ms/cycle).
+    # At 500: ~40 dream cycles per 20k run, manageable overhead.
+    creature.brain.config.dream_interval = 500
     creature.per_joint_scale = None
     creature.body_name = root_body_name
     standing_h = profile.get('standing_height', 0.48) if profile else 0.48
@@ -897,6 +898,8 @@ def main():
     wall_episode_count = 0
     _wall_last_obs_dist = 4.0  # hysteresis: remember last known distance
     _wall_obs_cooldown = 0     # steps since last wall detection
+    _wall_pause_counter = 0    # steps to stand still after wall contact before reset
+    _WALL_PAUSE_STEPS = 50     # ~1.5s at 33 sps — visible "perplex" moment
 
     # --- Issue #76d: Ball approach reward state ---
     # Biology: Dopamine burst on approach to salient stimulus (Schultz 1997).
@@ -1283,36 +1286,61 @@ def main():
         sensor_data['obstacle_distance'] = _obs_dist
 
         # --- Issue #103: Episodic wall reset ---
-        # Biology: A puppy that bumps into a wall doesn't walk 10m away.
-        # It backs up, reorients, and tries again. Each approach is a
-        # short episode. The puppy gets dozens of attempts per session.
-        # Without reset, the robot gets ONE wall approach in 20k steps.
-        # With reset: 10-20 approach-collision-reset cycles.
+        # Biology: A puppy that bumps into a wall doesn't teleport away.
+        # It stands there perplexed for a moment, then backs up.
+        # The pause is visible in video and gives the cerebellum time
+        # to process the collision CF signal before the episode resets.
+        #
+        # Two-phase reset:
+        #   Phase 1: Wall contact detected → CPG killed, robot stands still
+        #            for _WALL_PAUSE_STEPS (~50 steps / ~1.5s)
+        #   Phase 2: After pause → physics reset to start position
         _wall_reset = False
-        if _scene_has_wall and _obs_dist >= 0 and _obs_dist < 0.15 and step > 500:
-            _wall_reset = True
+
+        # Phase 1: Detect wall contact, start pause
+        if _scene_has_wall and _obs_dist >= 0 and _obs_dist < 0.10 and step > 500 and _wall_pause_counter == 0:
+            _wall_pause_counter = _WALL_PAUSE_STEPS
             wall_episode_count += 1
-            # Reset physics to standing pose
-            if world._model.nkey > 0:
-                mujoco.mj_resetDataKeyframe(world._model, world._data, 0)
-            else:
-                world._data.qpos[:] = 0
-                world._data.qvel[:] = 0
-                world._data.qpos[2] = standing_h + 0.02
-            mujoco.mj_forward(world._model, world._data)
-            consecutive_fallen = 0
-            is_fallen = False
-            creature._was_fallen = False
-            creature._prev_x = float(world._data.qpos[0])
-            _wall_last_obs_dist = 4.0  # reset hysteresis
-            _wall_obs_cooldown = 0
-            # Reset cerebellum episode state (not weights!)
-            if cb:
-                cb.reset_episode()
-            # Negative DA burst: "you hit the wall" — weakens recent synapses
+            # Negative DA burst: "you hit the wall"
             creature.snn.set_neuromodulator('da', 0.0)
             if wall_episode_count <= 20 or wall_episode_count % 5 == 0:
                 print(f'  [WALL HIT #{wall_episode_count} at step {step}, x={cur_x:.2f}]')
+
+        # During pause: count down, CPG override happens below (before CPG compute)
+        if _wall_pause_counter > 0:
+            _wall_pause_counter -= 1
+            if _wall_pause_counter == 0:
+                # Phase 2: Pause over → reset physics
+                _wall_reset = True
+                if world._model.nkey > 0:
+                    mujoco.mj_resetDataKeyframe(world._model, world._data, 0)
+                else:
+                    world._data.qpos[:] = 0
+                    world._data.qvel[:] = 0
+                    world._data.qpos[2] = standing_h + 0.02
+                mujoco.mj_forward(world._model, world._data)
+                consecutive_fallen = 0
+                is_fallen = False
+                creature._was_fallen = False
+                creature._prev_x = float(world._data.qpos[0])
+                _wall_last_obs_dist = 4.0
+                _wall_obs_cooldown = 0
+                # Reset cerebellum episode state (not weights!)
+                if cb:
+                    cb.reset_episode()
+                # Dream consolidation: replay obstacle approach patterns
+                if hasattr(creature, 'brain') and creature.brain:
+                    if hasattr(creature.brain, 'dream_engine'):
+                        try:
+                            creature.brain.dream_engine.dream_step(
+                                creature.brain.snn, n_steps=10)
+                        except Exception:
+                            pass
+                    if hasattr(creature.brain, 'synaptogenesis'):
+                        try:
+                            creature.brain.synaptogenesis.consolidate()
+                        except Exception:
+                            pass
 
         # Debug: show obstacle distance for first few steps
         # (uncomment for debugging: print(f'  [DBG step {step}] obs_dist=...'))
@@ -1399,33 +1427,132 @@ def main():
                     # Linear: 1.0m → 1.0, 0.3m → 0.3, 0.0m → 0.1
                     _proximity_amp_scale = max(0.1, 0.3 + 0.7 * (_bdist_prox / 1.0))
 
-        # Issue #103: Obstacle proximity brake (Trigeminal reflex)
-        # Biology: When a dog's whiskers/nose detect a wall, the brainstem
-        # IMMEDIATELY reduces locomotor drive via reticulospinal pathway.
-        # This is a hardwired reflex — no learning needed. It gives the
-        # cerebellum TIME to compute corrections instead of slamming into
-        # the wall at full CPG speed.
+        # Issue #107: Reticulospinal CPG Inhibition (DCN → CPG pathway)
+        # =============================================================
+        # Biology: The reticulospinal tract (RST) carries DCN output from
+        # the cerebellum to the spinal CPG. When the cerebellum detects
+        # an obstacle (via climbing fiber from inferior olive), DCN
+        # rebound bursts produce STRONG output that INHIBITS the CPG.
         #
-        # Without this brake, CPG at 90% overpowers any cerebellar correction.
-        # The cerebellum learns corrections of ~0.01 but CPG pushes with 0.9.
-        # The brake reduces CPG amplitude proportionally to obstacle proximity,
-        # creating a "space" for cerebellar corrections to actually matter.
-        # Tuning: brake starts at 0.40m (was 0.80m — too early, caused crawling).
-        # Minimum amplitude 30% (was 5% — too aggressive, robot almost stopped).
-        # Goal: robot still walks at reasonable speed near wall, but slows enough
-        # that cerebellar corrections can influence direction.
+        # This replaces the old trainer-side _proximity_amp_scale hack.
+        # The old hack externally reduced CPG amplitude based on distance
+        # — the brain never learned to brake. Now the DCN output directly
+        # modulates CPG amplitude through a biologically real pathway.
+        #
+        # The DCN correction magnitude naturally increases near obstacles:
+        #   - obstacle_cf fires → PkC calcium → PkC inhibits DCN
+        #   - calcium decays → PkC releases → DCN REBOUND BURST
+        #   - burst magnitude scales with obstacle proximity
+        #   - burst → CPG inhibition (this code)
+        #
+        # Two components:
+        #   1. LEARNED: DCN rebound strength → CPG inhibition (trains over time)
+        #   2. REFLEX: Brainstem proximity brake (hardwired, immediate safety)
+        #
+        # The reflex provides a safety floor; the cerebellum learns to
+        # anticipate and brake earlier/smoother than the reflex alone.
+        #
+        # Ref: Drew et al. 2004 — Reticulospinal control of locomotion
+        # Ref: Takakusaki 2013 — Brainstem-spinal cord locomotor circuits
+        _dcn_cpg_inhibition = 1.0  # 1.0 = no inhibition
+        if _scene_has_wall and not is_fallen and hasattr(creature, 'actor_critic') and creature.actor_critic is not None:
+            cb = creature.actor_critic
+            # Learned pathway: DCN rebound → CPG inhibition
+            # DCN rebound_strength is high when CF fired recently and
+            # calcium is decaying → the cerebellum "knows" it needs to brake
+            _dcn_reb = cb.stats.get('dcn_rebound_strength', 0.0)
+            # obstacle_cf tells us IF the obstacle triggered the cerebellum
+            _obs_cf = cb.inferior_olive._obstacle_cf
+            if _obs_cf > 0.05 and _dcn_reb > 0.01:
+                # CPG inhibition proportional to rebound × obstacle_cf
+                # Max inhibition: 70% (always keep some movement for recovery)
+                _dcn_inhibit = min(0.70, _dcn_reb * _obs_cf * 3.0)
+                _dcn_cpg_inhibition = 1.0 - _dcn_inhibit
+
+        # Brainstem obstacle reflexes: HARDWARE-MATCHED
+        # ================================================
+        # These must be IDENTICAL to freenove_bridge.py so that the brain
+        # trains in the same environment it will run on hardware.
+        # A dog has the same reflexes in training as in the real world.
+        #
+        # Three zones (same distances as freenove_bridge.py):
+        #   <0.05m (5cm):  REVERSE — CPG runs backward (back up)
+        #   <0.10m (10cm): STOP    — CPG killed (full stop)
+        #   <0.30m (30cm): SLOW    — graded CPG inhibition
+        #   >=0.30m:       CLEAR   — full CPG output
+        #
+        # v0.5.0: Tightened from 8/15/50cm to 5/10/30cm.
+        # The old distances were too conservative — the robot barely
+        # reached the wall (1 hit per 10k steps). A puppy needs to
+        # BUMP its nose to learn. The reflex prevents DAMAGE, not CONTACT.
+        # HC-SR04 is only reliable below ~30cm anyway.
+        _REFLEX_REVERSE_M = 0.05
+        _REFLEX_STOP_M = 0.10
+        _REFLEX_SLOW_M = 0.30
+        _reflex_cpg_inhibition = 1.0
+        _reflex_reverse = False
         if _scene_has_wall and not is_fallen:
             _obs_dist_brake = sensor_data.get('obstacle_distance', -1.0)
-            if _obs_dist_brake >= 0 and _obs_dist_brake < 0.40:
-                # 0.40m → 100%, 0.20m → 60%, 0.05m → 30%
-                _obstacle_amp = max(0.30, 0.30 + 0.70 * (_obs_dist_brake / 0.40))
-                _proximity_amp_scale *= _obstacle_amp
+            if _obs_dist_brake >= 0:
+                if _obs_dist_brake < _REFLEX_REVERSE_M:
+                    # CONTACT: Reverse CPG — back up
+                    _reflex_cpg_inhibition = 0.6  # reduced amplitude
+                    _reflex_reverse = True
+                elif _obs_dist_brake < _REFLEX_STOP_M:
+                    # COLLISION IMMINENT: CPG kill — full stop
+                    _reflex_cpg_inhibition = 0.0
+                elif _obs_dist_brake < _REFLEX_SLOW_M:
+                    # DANGER: Graded inhibition — slow proportionally
+                    _slow = (_obs_dist_brake - _REFLEX_STOP_M) / (_REFLEX_SLOW_M - _REFLEX_STOP_M)
+                    _reflex_cpg_inhibition = max(0.2, _slow)
+
+        # Combined: use whichever is MORE inhibitory (min = more brake)
+        # Early training: reflex dominates (DCN hasn't learned yet)
+        # Late training: DCN anticipates and brakes before reflex fires
+        _combined_inhibition = min(_dcn_cpg_inhibition, _reflex_cpg_inhibition)
+        _proximity_amp_scale *= _combined_inhibition
+
+        # Reverse: negate CPG frequency to walk backward
+        # (same as freenove_bridge.py set_reverse())
+        _cpg_freq_direction = -1.0 if _reflex_reverse else 1.0
+
+        # Issue #108: Obstacle Avoidance Turn Reflex (hardwired)
+        # ======================================================
+        # Biology: Trigeminal avoidance — when whiskers/nose detect
+        # an obstacle, the brainstem produces ASYMMETRIC motor commands:
+        # ipsilateral retraction + contralateral extension → animal
+        # TURNS AWAY. This is a reflex, not learned behavior.
+        # The cerebellum calibrates timing and gain over experience.
+        #
+        # Implementation: Add steering signal to CPG proportional to
+        # obstacle proximity. Direction is fixed (always turn left)
+        # because HC-SR04 is a single forward sensor — can't tell
+        # left from right. Many insects have fixed turning chirality.
+        #
+        # Ref: Nguyen & Bhatt 2018 — Trigeminal avoidance circuitry
+        # Ref: Dean et al. 1986 — Brainstem avoidance reflexes in rats
+        _REFLEX_TURN_GAIN = 0.4  # max steering magnitude
+        _reflex_turn_steering = 0.0
+        if _scene_has_wall and not is_fallen and not _reflex_reverse:
+            _obs_dist_turn = sensor_data.get('obstacle_distance', -1.0)
+            if _obs_dist_turn >= 0 and _obs_dist_turn < _REFLEX_SLOW_M:
+                # Strength: 0 at 30cm, full at 5cm
+                _turn_strength = 1.0 - (_obs_dist_turn / _REFLEX_SLOW_M)
+                _reflex_turn_steering = _turn_strength * _REFLEX_TURN_GAIN
+        # Add to existing steering (VOR etc.)
+        _cpg_steering += _reflex_turn_steering
+
+        # Wall pause: kill CPG completely during "perplex" phase
+        # This must be AFTER all other _proximity_amp_scale calculations
+        # so it can't be overridden by ball proximity or reflex logic.
+        if _wall_pause_counter > 0:
+            _proximity_amp_scale = 0.0
 
         if is_external_mjcf:
             # Go2: direct joint control (per-joint amplitudes)
             cpg_cmd = spinal_cpg.compute(
                 dt=args.timestep, arousal=ne_lvl,
-                freq_scale=current_freq_scale * tr_freq,
+                freq_scale=current_freq_scale * tr_freq * _cpg_freq_direction,
                 amp_scale=current_amp_scale * tr_amp * _proximity_amp_scale,
                 steering=_cpg_steering,
             )
@@ -1433,7 +1560,7 @@ def main():
             # Bommel: tendon-coupled actuators
             cpg_cmd = spinal_cpg.compute_tendon(
                 dt=args.timestep, arousal=ne_lvl,
-                freq_scale=current_freq_scale * tr_freq,
+                freq_scale=current_freq_scale * tr_freq * _cpg_freq_direction,
                 amp_scale=current_amp_scale * tr_amp * _proximity_amp_scale,
             )
 
@@ -1647,11 +1774,18 @@ def main():
                      f'  act:{gs["actor_competence"]:.3f}  DA:{da_signal:.2f}'
                      f'  CF:{cb_stats.get("cf_magnitude", 0.0):.3f}'
                      f'  corr:{cb_stats.get("correction_magnitude", 0.0):.4f}'
+                     f'  reb:{cb_stats.get("dcn_rebound_strength", 0.0):.3f}'
                      f'  terr:{terrain_cfg.difficulty:.2f}'
                      f'  TR:{terrain_reflex.stats["terrain_reflex_mag"]:.3f}'
                      f'  ft:{int(foot_sensor.contacts.sum())}')
             if _scene_has_wall:
                 line3 += f'  od:{_obs_dist:.2f}'
+                _rfx_state = ('REV' if _reflex_reverse else
+                              'STOP' if _reflex_cpg_inhibition < 0.01 else
+                              f'SLO{_reflex_cpg_inhibition:.0%}' if _reflex_cpg_inhibition < 1.0 else '')
+                line3 += f'  inh:{_combined_inhibition:.2f} {_rfx_state}'
+                if _reflex_turn_steering > 0.01:
+                    line3 += f' T:{_reflex_turn_steering:.2f}'
             # Issue #75: sensory info
             if sensory_env:
                 sm = sensor_data.get('smell_strength', 0.0)
