@@ -6,6 +6,12 @@
 
 **Biologically Grounded Embodied Cognition for Quadruped Locomotion Learning**
 
+> [!IMPORTANT]
+> **MH-FLOCKE is under continuous development by a solo researcher.**
+> The `main` branch reflects the current state of an evolving codebase.
+> Published paper results are reproducible using the tagged versions.
+> See [Papers & Reproducibility](#papers--reproducibility) for details.
+
 A simulated quadruped learns to walk through a 15-step closed-loop cognitive architecture integrating Izhikevich spiking neural networks, cerebellar forward models with DCN rebound bursting, central pattern generators, embodied emotions, and reward-modulated spike-timing-dependent plasticity — no end-to-end RL required.
 
 ## Key Results (10-Seed Validation, Unitree Go2)
@@ -206,13 +212,31 @@ Full documentation with architecture details, API references, mathematical formu
 
 25 pages covering: Architecture, SNN Controller, R-STDP, Cerebellum, CPG, Task Prediction Error, Reflexes, Emotions & Drives, Training Pipeline, FLOG Format, World Model, Global Workspace, Body Schema, Memory, Metacognition, and more.
 
-## Paper
+## Papers & Reproducibility
+
+MH-FLOCKE is an active research project. The `main` branch evolves continuously.
+To reproduce published results, use the tagged versions:
+
+### Paper 1 — Architecture & Ablation
 
 > **MH-FLOCKE: Biologically Grounded Embodied Cognition Through a 15-Step Closed-Loop Architecture for Quadruped Locomotion Learning**
 >
 > Marc Hesse (2026). Independent Researcher, Potsdam, Germany.
->
 > Preprint: [aixiv.science](https://aixiv.science)
+
+```bash
+git checkout v0.4.1-paper1
+```
+
+### Paper 2 — Sim-to-Real Transfer
+
+> **On-Device Spiking Neural Network Locomotion Learning on a €100 Quadruped: Sim-to-Real with Brain Persistence**
+>
+> Marc Hesse (2026). Independent Researcher, Potsdam, Germany.
+
+```bash
+git checkout v0.4.3-paper2
+```
 
 ## Videos
 
