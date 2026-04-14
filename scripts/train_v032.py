@@ -64,6 +64,7 @@ from src.body.mujoco_world import MuJoCoWorld
 from src.brain.cerebellar_learning import CerebellarLearning, CerebellarConfig
 from src.brain.spinal_reflexes import SpinalReflexes, ReflexConfig, SpinalSegments, SpinalSegmentConfig
 from src.brain.spinal_cpg import SpinalCPG, SpinalCPGConfig
+from src.brain.mogli_oscillator import MogliCPG, MogliConfig
 from src.brain.developmental_schedule import DevelopmentalSchedule, DevelopmentalConfig
 from src.body.terrain import (
     TerrainConfig, generate_heightfield, inject_terrain, inject_terrain_geoms,
@@ -394,6 +395,13 @@ def main():
     parser.add_argument('--no-vision', action='store_true',
                         help='Disable visual heading/distance sensor channels. '
                              'Use for robots without camera/vision sensor.')
+    parser.add_argument('--neural-cpg', action='store_true',
+                        help='Use Mogli Oscillator (SNN half-center CPG) instead of '
+                             'mathematical SpinalCPG.')
+    parser.add_argument('--legacy-cerebellum', action='store_true',
+                        help='Disable Izhikevich on cerebellum AND allow R-STDP on '
+                             'cerebellar weights. Reproduces v0.4.3 Go2 paper results '
+                             '(45.15m, 0 falls). Use with --creature-name go2.')
     args = parser.parse_args()
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -440,6 +448,12 @@ def main():
     if args.no_vision:
         print(f'  Vision channels: DISABLED')
     print(f'  SNN hidden neurons: {n_hidden}')
+
+    # Cerebellum mode flags
+    _izh_cerebellum = not args.legacy_cerebellum
+    _protect_cerebellum = not args.legacy_cerebellum
+    if args.legacy_cerebellum:
+        print(f'  Legacy cerebellum: ON (v0.4.3 compat — no Izhikevich, R-STDP on cerebellum)')
 
     print(f'\n  -- Phase 0: Knowledge Acquisition --')
     knowledge = acquire_knowledge(args.scene, creature_type='dog', use_llm=not args.no_llm)
@@ -510,7 +524,9 @@ def main():
                 n_hidden_neurons=n_hidden,
                 hardware_sensors=args.hardware_sensors,
                 no_vision=args.no_vision,
-                profile=profile)
+                profile=profile,
+                izh_cerebellum=_izh_cerebellum,
+                protect_cerebellum=_protect_cerebellum)
             os.remove(temp_xml)
         else:
             creature = MuJoCoCreatureBuilder.build(
@@ -520,7 +536,9 @@ def main():
                 n_hidden_neurons=n_hidden,
                 hardware_sensors=args.hardware_sensors,
                 no_vision=args.no_vision,
-                profile=profile)
+                profile=profile,
+                izh_cerebellum=_izh_cerebellum,
+                protect_cerebellum=_protect_cerebellum)
             print(f'  Terrain: flat (no heightfield)')
     else:
         # Legacy inline MJCF (dm_quadruped etc.)
@@ -539,15 +557,18 @@ def main():
             n_hidden_neurons=n_hidden,
             hardware_sensors=args.hardware_sensors,
             no_vision=args.no_vision,
-            profile=profile)
+            profile=profile,
+            izh_cerebellum=_izh_cerebellum,
+            protect_cerebellum=_protect_cerebellum)
     creature.SNN_SUBSTEPS = args.snn_substeps
     # Protect cerebellar populations from CognitiveBrain learning
     # (GrC patterns must stay stable for Marr-Albus learning)
-    # Hidden/Input/Output neurons learn freely via R-STDP, Hebbian, Dreams, Neuromod
-    creature.snn.protected_populations = {
-        'mossy_fibers', 'granule_cells', 'golgi_cells',
-        'purkinje_cells', 'dcn',
-    }
+    # With --legacy-cerebellum: R-STDP can modify cerebellar weights (v0.4.3 behavior)
+    if _protect_cerebellum:
+        creature.snn.protected_populations = {
+            'mossy_fibers', 'granule_cells', 'golgi_cells',
+            'purkinje_cells', 'dcn',
+        }
     creature.brain.config.pci_interval = args.pci_interval
     # Dream consolidation: enabled for wall training (Issue #103).
     # Periodic dreams at interval=500 (~every 16s at 30ms/step).
@@ -659,7 +680,15 @@ def main():
           f'  golgi@{spinal_segments.config.golgi_threshold:.2f}')
 
     # --- Load evolved CPG params or use defaults ---
-    if cpg_config_path:
+    if getattr(args, 'neural_cpg', False):
+        # Mogli Oscillator: SNN-based half-center CPG (Issue #111)
+        mogli_cfg = MogliConfig()
+        spinal_cpg = MogliCPG(n_actuators=12, joints_per_leg=3, config=mogli_cfg)
+        print(f'  CPG: MOGLI OSCILLATOR (24 Izhikevich half-center neurons)')
+        print(f'    w_mutual={mogli_cfg.w_mutual}  w_contra={mogli_cfg.w_contralateral}'
+              f'  drive={mogli_cfg.tonic_drive_base}  gain={mogli_cfg.initial_gain}→{mogli_cfg.max_gain}'
+              f'  ramp={mogli_cfg.gain_ramp_steps}')
+    elif cpg_config_path:
         spinal_cpg = SpinalCPG.from_evolved(cpg_config_path, n_actuators=12, joints_per_leg=3)
         print(f'  CPG: evolved params from {cpg_config_path}')
         print(f'    freq={spinal_cpg.config.frequency:.3f}Hz  hip={spinal_cpg.config.hip_amplitude:.3f}'
@@ -754,7 +783,7 @@ def main():
         gate.vel_ema = ckpt.get('vel_ema', 0.0)
         cpg_phases = ckpt.get('cpg_phases', None)
         cpg_step = ckpt.get('cpg_step', 0)
-        if cpg_phases is not None:
+        if cpg_phases is not None and hasattr(spinal_cpg, '_phases'):
             spinal_cpg._phases = np.array(cpg_phases)
         spinal_cpg._step = cpg_step
         max_dist = ckpt.get('max_dist', 0.0)
@@ -1622,11 +1651,14 @@ def main():
         creature._olfactory_steering = sensor_data.get('olfactory_steering', 0.0)
 
         # Store CPG phase for hardware sensor encoding (Bridge v2.5 compatibility)
-        if args.hardware_sensors and hasattr(spinal_cpg, '_phases'):
-            import math
-            _phase_rad = float(spinal_cpg._phases[0])
-            creature._cpg_phase_input = np.array(
-                [math.sin(_phase_rad), math.cos(_phase_rad)], dtype=np.float32)
+        if args.hardware_sensors:
+            if hasattr(spinal_cpg, '_phases'):
+                import math
+                _phase_rad = float(spinal_cpg._phases[0])
+                creature._cpg_phase_input = np.array(
+                    [math.sin(_phase_rad), math.cos(_phase_rad)], dtype=np.float32)
+            elif hasattr(spinal_cpg, 'get_phase_input'):
+                creature._cpg_phase_input = spinal_cpg.get_phase_input()
 
         step_result = creature.step(
             reward_signal=reward,
@@ -1901,8 +1933,9 @@ def main():
         'best_upright_streak': best_upright_streak, 'pci': last_pci,
         'actor_competence': gate.actor_competence, 'cpg_weight': gate.cpg_weight,
         'vel_ema': gate.vel_ema,
-        'cpg_phases': spinal_cpg._phases.tolist(),
+        'cpg_phases': spinal_cpg._phases.tolist() if hasattr(spinal_cpg, '_phases') else [],
         'cpg_step': spinal_cpg._step,
+        'cpg_type': 'mogli' if getattr(args, 'neural_cpg', False) else 'spinal',
         'version': 'v0.4.3', 'scene': args.scene, 'seed': args.seed,
         'terrain_type': terrain_cfg.terrain_type, 'terrain_difficulty': terrain_cfg.difficulty,
         'flog_path': flog_path,

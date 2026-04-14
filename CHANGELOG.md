@@ -1,6 +1,20 @@
 # Changelog
 
-## v0.5.0 (2026-04-13)
+## v0.5.0 (2026-04-14)
+
+### Mogli Oscillator v0.1.0 (Issue #111) — NEW
+- SNN-based CPG replacing the mathematical SpinalCPG (sin/cos)
+- 24 Izhikevich neurons: 2 per joint (flexor/extensor) × 3 joints × 4 legs
+- Half-center oscillation via mutual inhibition (Brown 1911)
+- Inter-leg coupling produces walk gait: FL↔FR=-0.78, FL↔RR=+0.73
+- Adaptive gain: developmental maturation from 3.0→8.0 over 2000 steps
+  (biology: 5-HT from raphe nuclei increases motor neuron excitability)
+- Dual steering: tonic drive asymmetry + output amplitude scaling
+- CPG autonomy floor: spinal CPG maintains minimum rhythm independent
+  of cortical commands (biology: decerebrate cats still walk)
+- Learnable coupling weights prepared for R-STDP (not yet active)
+- 50k result: 1.21m, 0 falls, actor competence 0.649, CPG→58%
+- Enable with `--neural-cpg` flag
 
 ### Izhikevich Neuron Dynamics (Issue #104)
 - Per-population Izhikevich (a,b,c,d) parameters replace uniform LIF-LTC
@@ -40,17 +54,14 @@
 ### Go2 Stability Fix (Issue #110)
 - Velocity-based stuck detection: resets robot when motionless (vel < 0.005)
   with upright < 0.7 for 200+ consecutive steps
-- Fixes Go2 lying on side for thousands of steps without triggering is_fallen()
-- Go2 10k result: 4.69m distance (was 0.65m before fix)
+- Go2 compatibility: `--legacy-cerebellum` flag for v0.4.x behavior
 
 ### Roadmap
-We're working toward a spatial planning layer inspired by hippocampal
-place cells and prefrontal cortex working memory, and a neural CPG
-based on coupled Izhikevich half-center oscillators (Mogli Oscillator)
-to replace the mathematical CPG. This will enable per-leg adaptation,
-realistic turning, gait transitions, and limb-loss compensation.
-Biological hierarchy: spinal reflexes → brainstem avoidance →
-cerebellar calibration → cortical planning.
+- Mogli Oscillator: R-STDP coupling learning for automatic gait
+  reorganization after limb loss
+- Spatial planning: hippocampal place cells + prefrontal working memory
+- Biological hierarchy: spinal reflexes → brainstem avoidance →
+  cerebellar calibration → cortical planning
 
 ## v0.4.3 (2026-04-12)
 

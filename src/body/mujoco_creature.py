@@ -843,7 +843,9 @@ class MuJoCoCreatureBuilder:
               xml_string: str = None,
               hardware_sensors: bool = False,
               no_vision: bool = False,
-              profile: dict = None) -> 'MuJoCoCreature':
+              profile: dict = None,
+              izh_cerebellum: bool = True,
+              protect_cerebellum: bool = True) -> 'MuJoCoCreature':
         """
         Baut eine MuJoCo-Kreatur aus Genome (oder fertigem XML).
         
@@ -858,6 +860,12 @@ class MuJoCoCreatureBuilder:
             hardware_sensors: Use hardware-matched sensor encoding (Bridge v2.5 layout)
             no_vision: Disable visual heading/distance channels
             profile: Creature profile dict (from profile.json). If provided,
+                     overrides n_hidden_neurons with profile['snn']['n_hidden'].
+            izh_cerebellum: Enable Izhikevich dynamics on cerebellar populations.
+                     Default True (v0.5.0). Set False for v0.4.3 LIF-LTC behavior.
+            protect_cerebellum: Protect cerebellar populations from R-STDP.
+                     Default True (v0.5.0). Set False for v0.4.3 behavior where
+                     R-STDP could modify cerebellar weights.
                      overrides n_hidden_neurons with profile['snn']['n_hidden'].
             
         Returns:
@@ -1039,24 +1047,23 @@ class MuJoCoCreatureBuilder:
 
         # === Per-population Izhikevich parameters (Issue #104) ===
         # Enable biologically accurate firing dynamics per cell type.
-        # Must match freenove_bridge.py build_freenove_snn() exactly
-        # so sim-trained brains transfer correctly to hardware.
-        # Ref: Izhikevich 2003, Table 2
-        snn.set_izhikevich_params('granule_cells', a=0.02, b=0.2, c=-65, d=8)   # RS
-        snn.set_izhikevich_params('golgi_cells',   a=0.02, b=0.2, c=-55, d=4)   # IB
-        snn.set_izhikevich_params('purkinje_cells', a=0.02, b=0.2, c=-50, d=2)  # CH
-        snn.set_izhikevich_params('dcn',           a=0.03, b=0.25, c=-52, d=0)  # Rebound
-        # Output neurons: keep LIF-LTC (no Izhikevich).
-        # Biology: Motoneurons are Regular Spiking / Tonic, NOT Fast Spiking.
-        # FS is for PV+ GABAergic interneurons. Setting output to FS caused
-        # abrupt motor commands that destabilized the Go2 (Issue #110).
+        # Can be disabled with izh_cerebellum=False for v0.4.3 compatibility.
+        if izh_cerebellum:
+            snn.set_izhikevich_params('granule_cells', a=0.02, b=0.2, c=-65, d=8)   # RS
+            snn.set_izhikevich_params('golgi_cells',   a=0.02, b=0.2, c=-55, d=4)   # IB
+            snn.set_izhikevich_params('purkinje_cells', a=0.02, b=0.2, c=-50, d=2)  # CH
+            snn.set_izhikevich_params('dcn',           a=0.03, b=0.25, c=-52, d=0)  # Rebound
+        # Output neurons: always LIF-LTC (motoneurons are RS/Tonic, not FS)
 
         # Protect cerebellar populations from R-STDP
-        # (cerebellar learning is handled by CerebellarLearning module)
-        snn.protected_populations = {
-            'mossy_fibers', 'granule_cells', 'golgi_cells',
-            'purkinje_cells', 'dcn',
-        }
+        # Can be disabled with protect_cerebellum=False for v0.4.3 compatibility
+        # where R-STDP could modify cerebellar weights (biologically incorrect
+        # but empirically helped Go2 stability).
+        if protect_cerebellum:
+            snn.protected_populations = {
+                'mossy_fibers', 'granule_cells', 'golgi_cells',
+                'purkinje_cells', 'dcn',
+            }
 
         snn._rebuild_sparse_weights()
 
