@@ -470,7 +470,8 @@ def build_freenove_snn(device='cpu'):
     snn.set_izhikevich_params('golgi_cells',   a=0.02, b=0.2, c=-55, d=4)   # IB
     snn.set_izhikevich_params('purkinje_cells', a=0.02, b=0.2, c=-50, d=2)  # CH
     snn.set_izhikevich_params('dcn',           a=0.03, b=0.25, c=-52, d=0)  # Rebound
-    snn.set_izhikevich_params('output',        a=0.1,  b=0.2, c=-65, d=2)   # FS
+    # Output neurons: keep LIF-LTC (no Izhikevich).
+    # Motoneurons are RS/Tonic, not FS. FS caused Go2 instability.
 
     print(f'  SNN: {total_neurons} neurons, {snn._n_synapses} synapses')
     print(f'  Cerebellum: GrC={n_granule} GoC={n_golgi} PkC={n_purkinje} DCN={n_dcn}')

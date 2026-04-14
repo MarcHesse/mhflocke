@@ -894,6 +894,16 @@ def main():
     consecutive_fallen = 0
     reset_count = 0
 
+    # Issue #110: Velocity-based stuck detection for Go2
+    # The Go2 can lie on its side with upright ~0.35, which doesn't
+    # trigger is_fallen() (threshold 0.3). It then lies motionless
+    # for thousands of steps wasting training time.
+    # Fix: if velocity ≈ 0 AND upright < 0.7 for 200+ steps → stuck.
+    _stuck_counter = 0
+    _STUCK_THRESHOLD_STEPS = 200  # ~6 seconds at 30ms/step
+    _STUCK_VELOCITY_MAX = 0.005   # m/s — basically motionless
+    _STUCK_UPRIGHT_MAX = 0.7      # below this = not standing properly
+
     # --- Issue #103: Wall episode state ---
     wall_episode_count = 0
     _wall_last_obs_dist = 4.0  # hysteresis: remember last known distance
@@ -1176,6 +1186,7 @@ def main():
             is_fallen = False
             creature._was_fallen = False
             creature._prev_x = float(world._data.qpos[0])
+            _stuck_counter = 0  # Issue #110: reset stuck counter
             # Restore ball position after reset (keyframe reset zeros all qpos)
             _ball_id_reset = mujoco.mj_name2id(world._model, mujoco.mjtObj.mjOBJ_BODY, 'ball')
             if _ball_id_reset >= 0:
@@ -1188,6 +1199,44 @@ def main():
                 mujoco.mj_forward(world._model, world._data)
             if step < 100 or reset_count <= 3 or reset_count % 10 == 0:
                 print(f'  [RESET #{reset_count} at step {step}]')
+
+        # Issue #110: Velocity-based stuck detection
+        # Catches Go2 lying on its side (upright ~0.35, not detected as fallen)
+        # or any creature that is motionless but not technically "fallen".
+        # Biology: A stuck animal thrashes and tries to right itself.
+        # Our auto-reset is the "parent picking up the puppy".
+        if auto_reset_limit > 0 and not is_fallen:
+            if vel_mps < _STUCK_VELOCITY_MAX and upright < _STUCK_UPRIGHT_MAX:
+                _stuck_counter += 1
+            else:
+                _stuck_counter = 0
+            if _stuck_counter >= _STUCK_THRESHOLD_STEPS:
+                # Stuck: motionless + not upright for too long → reset
+                if world._model.nkey > 0:
+                    mujoco.mj_resetDataKeyframe(world._model, world._data, 0)
+                else:
+                    world._data.qpos[:] = 0
+                    world._data.qvel[:] = 0
+                    world._data.qpos[2] = standing_h + 0.02
+                mujoco.mj_forward(world._model, world._data)
+                _stuck_counter = 0
+                consecutive_fallen = 0
+                reset_count += 1
+                is_fallen = False
+                creature._was_fallen = False
+                creature._prev_x = float(world._data.qpos[0])
+                # Restore ball position
+                _ball_id_stuck = mujoco.mj_name2id(world._model, mujoco.mjtObj.mjOBJ_BODY, 'ball')
+                if _ball_id_stuck >= 0:
+                    _ball_jnt_s = mujoco.mj_name2id(world._model, mujoco.mjtObj.mjOBJ_JOINT, 'ball_joint')
+                    _bqa_s = world._model.jnt_qposadr[_ball_jnt_s]
+                    world._data.qpos[_bqa_s:_bqa_s + 3] = [3.0, 2.0, 0.12]
+                    world._data.qpos[_bqa_s + 3:_bqa_s + 7] = [1.0, 0.0, 0.0, 0.0]
+                    _bda_s = world._model.jnt_dofadr[_ball_jnt_s]
+                    world._data.qvel[_bda_s:_bda_s + 6] = 0.0
+                    mujoco.mj_forward(world._model, world._data)
+                if reset_count <= 10 or reset_count % 10 == 0:
+                    print(f'  [STUCK RESET #{reset_count} at step {step} — vel={vel_mps:.4f} up={upright:.2f}]')
 
         # Track fall *transitions*, not every step while fallen
         was_fallen = getattr(creature, '_was_fallen', False)

@@ -61,7 +61,7 @@ The Raspberry Pi 4 runs the **same SNN and cerebellum code** as the MuJoCo simul
 - Compute: Raspberry Pi 4 (2GB+ RAM)
 - 12 SG90 servos, PCA9685 driver, MPU6050 IMU, HC-SR04 ultrasonic
 - SNN: 232 Izhikevich neurons (48 MF + 106 GrC + 18 GoC + 24 PkC + 24 DCN + 12 OUT)
-- Per-population neuron dynamics: Regular Spiking, Intrinsically Bursting, Chattering, Rebound Burst, Fast Spiking
+- Per-population neuron dynamics: Regular Spiking, Intrinsically Bursting, Chattering, Rebound Burst
 - Obstacle reflexes: hardware-matched brainstem-level STOP/SLOW/REVERSE/TURN
 - Control loop: 29Hz with PyTorch CPU-only
 
@@ -118,9 +118,13 @@ The architecture operates across nested timescales, following the biological hie
 
 The CPG provides a locomotion prior from step 1. As the SNN actor learns, a competence gate smoothly transitions from 90% CPG to 40% CPG / 60% actor. The creature walks immediately and improves through learning — no random exploration phase required.
 
-### Roadmap: Spatial Planning
+### Roadmap
 
-The current architecture implements biological layers 1-3 (spinal, brainstem, cerebellum). We are working toward a spatial planning layer inspired by hippocampal place cells and prefrontal cortex working memory. This will enable the robot to build a cognitive map of its environment and plan paths around obstacles — moving from reactive avoidance to goal-directed navigation.
+The current architecture implements biological layers 1-3 (spinal, brainstem, cerebellum). Next milestones:
+
+- **Mogli Oscillator** — Replacing the mathematical CPG with coupled SNN half-center oscillators built from Izhikevich neurons. Each leg gets its own oscillator; inter-leg coupling via interneurons produces gaits. This enables per-leg adaptation, realistic turning (asymmetric step lengths), gait transitions (walk→trot→gallop), and automatic compensation for limb loss — capabilities impossible with the current sin/cos CPG.
+
+- **Spatial Planning** — A planning layer inspired by hippocampal place cells and prefrontal cortex working memory. This will enable the robot to build a cognitive map of its environment and plan paths around obstacles — moving from reactive avoidance to goal-directed navigation.
 
 ## Ablation Design
 

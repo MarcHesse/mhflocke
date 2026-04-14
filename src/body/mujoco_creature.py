@@ -1046,7 +1046,10 @@ class MuJoCoCreatureBuilder:
         snn.set_izhikevich_params('golgi_cells',   a=0.02, b=0.2, c=-55, d=4)   # IB
         snn.set_izhikevich_params('purkinje_cells', a=0.02, b=0.2, c=-50, d=2)  # CH
         snn.set_izhikevich_params('dcn',           a=0.03, b=0.25, c=-52, d=0)  # Rebound
-        snn.set_izhikevich_params('output',        a=0.1,  b=0.2, c=-65, d=2)   # FS
+        # Output neurons: keep LIF-LTC (no Izhikevich).
+        # Biology: Motoneurons are Regular Spiking / Tonic, NOT Fast Spiking.
+        # FS is for PV+ GABAergic interneurons. Setting output to FS caused
+        # abrupt motor commands that destabilized the Go2 (Issue #110).
 
         # Protect cerebellar populations from R-STDP
         # (cerebellar learning is handled by CerebellarLearning module)

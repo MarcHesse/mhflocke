@@ -4,8 +4,9 @@
 
 ### Izhikevich Neuron Dynamics (Issue #104)
 - Per-population Izhikevich (a,b,c,d) parameters replace uniform LIF-LTC
-- 5 biologically accurate cell types: Regular Spiking (GrC), Intrinsically
-  Bursting (GoC), Chattering (PkC), Rebound Burst (DCN), Fast Spiking (Output)
+- 4 biologically accurate cell types: Regular Spiking (GrC), Intrinsically
+  Bursting (GoC), Chattering (PkC), Rebound Burst (DCN)
+- Output neurons remain LIF-LTC (motoneurons are RS/Tonic, not FS)
 - Recovery variable `u` enables rebound bursting, pacemaker oscillation,
   and chattering dynamics that LIF cannot produce
 - Backward-compatible: v0.4.x brains load correctly (defaults to LIF mode)
@@ -36,11 +37,19 @@
 - CPG frequency scale ×0.7 for servo tracking capability
 - Cerebellar populations protected from R-STDP interference
 
+### Go2 Stability Fix (Issue #110)
+- Velocity-based stuck detection: resets robot when motionless (vel < 0.005)
+  with upright < 0.7 for 200+ consecutive steps
+- Fixes Go2 lying on side for thousands of steps without triggering is_fallen()
+- Go2 10k result: 4.69m distance (was 0.65m before fix)
+
 ### Roadmap
 We're working toward a spatial planning layer inspired by hippocampal
-place cells and prefrontal cortex working memory. This will enable
-path planning around obstacles — not just reactive avoidance. The
-biological hierarchy: spinal reflexes → brainstem avoidance →
+place cells and prefrontal cortex working memory, and a neural CPG
+based on coupled Izhikevich half-center oscillators (Mogli Oscillator)
+to replace the mathematical CPG. This will enable per-leg adaptation,
+realistic turning, gait transitions, and limb-loss compensation.
+Biological hierarchy: spinal reflexes → brainstem avoidance →
 cerebellar calibration → cortical planning.
 
 ## v0.4.3 (2026-04-12)
