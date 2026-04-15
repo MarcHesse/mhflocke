@@ -684,10 +684,10 @@ def main():
         # Mogli Oscillator: SNN-based half-center CPG (Issue #111)
         mogli_cfg = MogliConfig()
         spinal_cpg = MogliCPG(n_actuators=12, joints_per_leg=3, config=mogli_cfg)
-        print(f'  CPG: MOGLI OSCILLATOR (24 Izhikevich half-center neurons)')
+        print(f'  CPG: MOGLI OSCILLATOR v0.2.1 (8 Izhikevich half-center neurons)')
         print(f'    w_mutual={mogli_cfg.w_mutual}  w_contra={mogli_cfg.w_contralateral}'
-              f'  drive={mogli_cfg.tonic_drive_base}  gain={mogli_cfg.initial_gain}→{mogli_cfg.max_gain}'
-              f'  ramp={mogli_cfg.gain_ramp_steps}')
+              f'  drive={mogli_cfg.tonic_drive_base}  amp={mogli_cfg.base_amplitude}→{mogli_cfg.max_amplitude}'
+              f'  mat={mogli_cfg.maturation_steps}')
     elif cpg_config_path:
         spinal_cpg = SpinalCPG.from_evolved(cpg_config_path, n_actuators=12, joints_per_leg=3)
         print(f'  CPG: evolved params from {cpg_config_path}')
