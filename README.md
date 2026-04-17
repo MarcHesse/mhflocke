@@ -14,6 +14,8 @@
 
 A simulated quadruped learns to walk through a 15-step closed-loop cognitive architecture integrating Izhikevich spiking neural networks, cerebellar forward models with DCN rebound bursting, central pattern generators, embodied emotions, and reward-modulated spike-timing-dependent plasticity — no end-to-end RL required.
 
+**v0.6.0:** The dog now walks straight (12.4m), steers reliably (R²=0.97), follows a moving ball (1.64m mean distance), survives leg loss, and runs the full 15-step CognitiveBrain loop with autonomous behavior selection.
+
 ## Key Results (10-Seed Validation, Unitree Go2)
 
 | Config | Distance (m) | Falls | Variance |

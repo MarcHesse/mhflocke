@@ -24,17 +24,32 @@ class DriveMotorBridge:
     """
 
     def __init__(self, creature_type: str = 'dog',
-                 scene_instruction: Optional[SceneInstruction] = None):
+                 scene_instruction: Optional[SceneInstruction] = None,
+                 drive_limits: Optional[Dict] = None):
         """
         Args:
             creature_type: 'dog' loads full dog behavior repertoire
             scene_instruction: optional scene context for behavior weighting
+            drive_limits: optional dict with 'freq_max' and 'amp_max'
+                from creature profile. Prevents behaviors like chase
+                from destabilizing light robots (Freenove 0.5kg).
         """
         self.knowledge = BehaviorKnowledge(creature_type=creature_type)
         self.planner = BehaviorPlanner(self.knowledge)
 
         if scene_instruction:
             self.planner.set_scene(scene_instruction)
+
+        # Drive limits from creature profile (Issue #124)
+        self._freq_min = 0.0  # default: no lower limit
+        self._freq_max = 2.0  # default: no upper limit
+        self._amp_min = 0.0
+        self._amp_max = 2.0
+        if drive_limits:
+            self._freq_min = drive_limits.get('freq_min', 0.0)
+            self._freq_max = drive_limits.get('freq_max', 2.0)
+            self._amp_min = drive_limits.get('amp_min', 0.0)
+            self._amp_max = drive_limits.get('amp_max', 2.0)
 
         # Smoothed output (EMA to avoid jitter between behaviors)
         self._freq_scale = 1.0
@@ -107,6 +122,10 @@ class DriveMotorBridge:
         # Smooth transition (EMA)
         self._freq_scale += (target_freq - self._freq_scale) * self._smooth_rate
         self._amp_scale += (target_amp - self._amp_scale) * self._smooth_rate
+
+        # Creature-specific limits (Issue #124)
+        self._freq_scale = max(self._freq_min, min(self._freq_scale, self._freq_max))
+        self._amp_scale = max(self._amp_min, min(self._amp_scale, self._amp_max))
 
         # Track behavior history (keep last 10 for logging)
         if (not self._behavior_history or

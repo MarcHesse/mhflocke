@@ -1,5 +1,69 @@
 # Changelog
 
+## v0.6.0 (2026-04-17)
+
+### Vestibulospinal Reflex Fix (Issue #130) — CRITICAL
+- **Dead-band on vestibular correction.** The v0.3.1 cycle-integrator reflex
+  caused circling (gain=0.3: 36% uptime, 2 falls) or spinning (gain=0.6: 45
+  revolutions) because gait-synchronous yaw oscillation was mistaken for drift.
+  Fix: if |drift| < 0.3 rad/s, no correction is applied. The cycle-integrator
+  still runs for logging and future learning — only the motor output is gated.
+- Result: all gain values now produce identical straight walking (4.24m, 100%
+  uptime, 0 falls). The reflex is silent during normal gait but activates on
+  real disturbances (shove, slope, leg loss).
+- Biology: vestibular afferent thresholds (Goldberg & Fernandez 1971)
+
+### Step-Length Steering (Issue #131) — NEW
+- **Replaced drive-mod + ABD-offset steering** with hip amplitude asymmetry
+  in the Pattern Formation Layer. Inner legs get shorter steps, outer legs get
+  longer steps. This is how real quadrupeds turn.
+- Old steering: chaotic resonance at random values (R²=0.03), ABD had zero
+  effect. New steering: monotonic from -3.7 to +3.7 revolutions, **R²=0.969**.
+- Biology: Maes & Abourachid 2013, quadruped turning kinematics
+
+### Ball Tracking — FIRST SUCCESSFUL GOAL-DIRECTED NAVIGATION
+- Dog follows a moving figure-8 target for 10 full loops (120k steps).
+  Mean distance 1.64m, 61% of time within 2m, 0 falls.
+- With FR leg disabled: mean 1.76m, 63% within 2m, 0 falls.
+  Dog tracks ball with missing leg — nearly identical to 4-leg performance.
+
+### TectospinalBias v0.7.0 — NEW
+- Mid-brain steering-bias adapter learns constant offset for body asymmetry.
+  Converges in ~50 gait cycles. With FR leg disabled: improves tracking from
+  63% to 72% within 2m, reduces max distance from 3.67m to 2.43m.
+- Simple integrator with empirically confirmed sign convention.
+  Replaces failed v0.6.0-v0.6.2 (sign-probing) versions.
+
+### Full-Stack CognitiveBrain Integration
+- First successful training run with all 15 CognitiveBrain steps active on
+  a stable quadruped: Drives, Emotions, Memory, DreamEngine, Synaptogenesis,
+  Metacognition, Astrocyte gating, PCI monitoring.
+- 50k steps: 2.41m, 1 fall, 40098-step upright streak, actor competence 0.97.
+- SNN takes over 60% of motor control from CPG (CPG weight 42%).
+- Autonomous behavior selection: motor_babbling -> alert -> chase -> walk.
+
+### Drive-Limits (Issue #124)
+- Creature-specific freq_min/max and amp_min/max in profile.json.
+  Prevents destabilizing frequency jumps between behaviors.
+
+### Progress-Based Stuck Detection (Issue #125)
+- Resets episode when max distance hasn't grown for 500 steps.
+  Catches creatures that are upright but making no forward progress.
+
+### Mogli Oscillator Version History
+- v0.3.0: EMA-smoothed vestibulospinal reflex (superseded)
+- v0.3.1: Phase-locked cycle-integrator (Ito 1984) (superseded)
+- v0.3.2: Dead-band on correction output (fixes circling)
+- v0.3.3: Step-length steering replaces drive-mod + ABD-offset
+
+### Freenove Capabilities at v0.6.0
+- Straight walking: 12.4m in 250s, 0 falls
+- Controlled turning: R²=0.969, ±3.7 revolutions
+- Ball tracking: 1.64m mean distance to moving target
+- Leg-loss survival: walks and tracks with 3 legs
+- Drift compensation: TectospinalBias learns in ~50 cycles
+- Full CognitiveBrain loop: 15 steps, all systems active
+
 ## v0.5.0 (2026-04-14)
 
 ### Mogli Oscillator v0.1.0 (Issue #111) — NEW

@@ -42,6 +42,13 @@
     "tonic_current": 10.0
   },
 
+  "drive_limits": {
+    "freq_min": 0.80,
+    "freq_max": 1.10,
+    "amp_min": 0.70,
+    "amp_max": 1.00
+  },
+
   "hardware": {
     "compute": "Raspberry Pi 4",
     "hostname": "robot",

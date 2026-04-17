@@ -1,9 +1,9 @@
 """
-MH-FLOCKE — Mogli Oscillator v0.2.1
+MH-FLOCKE — Mogli Oscillator v0.3.3
 ========================================
 SNN-based coupled half-center CPG for quadruped locomotion.
 
-Architecture (v0.2.1 — Firing-Rate Phase Accumulation):
+Architecture (v0.3.3 — Step-Length Steering):
     The Mogli Oscillator uses Izhikevich half-center neurons as RHYTHM
     GENERATORS, not as direct motor command sources. Each leg has one
     hip half-center oscillator (2 neurons). The oscillator output is
@@ -27,6 +27,50 @@ Architecture (v0.2.1 — Firing-Rate Phase Accumulation):
     steering, reflexes, wall avoidance) works identically with Mogli.
     The ONLY difference is WHERE the phase comes from — biological
     neurons instead of a mathematical phase accumulator.
+
+    v0.3.0: Vestibulospinal reflex via EMA-smoothed yaw_rate.
+        Problem discovered empirically: walking produces gait-synchronous
+        yaw oscillation at ~1 Hz. An EMA filter cannot separate this
+        periodic signal from real drift — no smoothing constant works.
+
+    v0.3.1: Synchronous detector using FL hip oscillator phase as
+        gait-cycle reference. Over one full cycle, periodic yaw
+        oscillation integrates to zero; only the DC/drift component
+        survives. Biologically motivated: the cerebellar flocculus
+        performs phase-locked vestibular integration, not time-based.
+        Works identically on hardware (MPU6050, same code path).
+        Ref: Ito 1984, Wilson & Melvill Jones 1979
+
+    v0.3.2: Dead-band on vestibular correction.
+        Empirical finding (2026-04-16): the cycle-integrator does NOT
+        fully cancel gait-synchronous yaw oscillation. Residual is
+        mistaken for drift, correction creates new drift, positive
+        feedback → circling (gain=0.6: 45 revolutions) or falling
+        (gain=0.3: 36% uptime). With gain=0.0: 4.24m straight walk,
+        100% uptime, 0 falls.
+        Fix: dead-band threshold below which drift_estimate is treated
+        as gait noise and no correction is applied. The reflex only
+        fires on real disturbances (shove, slope, leg loss) where
+        |drift| exceeds the gait-noise floor.
+        Biology: the real vestibulospinal reflex has sensory thresholds
+        set by the otolith organs and calibrated by the flocculus.
+        Ref: Goldberg & Fernandez 1971 — vestibular afferent thresholds
+
+    v0.3.3: Step-length steering replaces drive-mod + ABD-offset.
+        Empirical finding (2026-04-16): drive-mod steering (L/R tonic
+        drive asymmetry) produced chaotic resonance — 3 of 9 steering
+        values triggered spinning while the others had zero effect.
+        ABD-offset had zero measurable effect (R²=0.003).
+        Root cause: the inter-leg coupling (w_contra=-12, w_diag=+10)
+        synchronizes oscillator frequencies, cancelling the drive-mod
+        asymmetry. Only at certain resonance points does the asymmetry
+        break through, producing unpredictable spinning.
+        Fix: remove both old channels. Instead, modulate HIP AMPLITUDE
+        per side in the Pattern Formation Layer — inner legs get shorter
+        steps, outer legs get longer steps. This is how real quadrupeds
+        turn: step-length asymmetry, not frequency asymmetry.
+        Ref: Maes & Abourachid 2013 — quadruped turning kinematics
+        Ref: Ijspeert 2008 — pattern formation layer modulation
 
 Named after the project's test dog Mogli.
 
@@ -90,6 +134,61 @@ class MogliConfig:
     # Phase offsets for walk gait
     initial_phase_offsets: List[float] = field(
         default_factory=lambda: [0.0, 0.5, 0.75, 0.25])
+
+    # Vestibulospinal reflex (v0.3.1 — cycle-integrator filter)
+    # Biology: Lateral vestibulospinal tract (LVST) modulates ipsilateral
+    # extensor motoneuron excitability based on vestibular input.
+    # When the animal drifts left (positive yaw_rate), LVST increases
+    # right-side drive and decreases left-side drive → corrective turn.
+    # Ref: Wilson & Melvill Jones 1979, Orlovsky 1972
+    #
+    # Problem with EMA smoothing (v0.3.0): Walking produces cyclical
+    # yaw_rate oscillation at the gait frequency (~1 Hz). This is
+    # NOT drift — it's the natural side-to-side wobble of a walking
+    # quadruped. An EMA filter cannot distinguish cyclical oscillation
+    # (which integrates to zero over a full cycle) from real drift
+    # (which has a non-zero mean over a cycle).
+    #
+    # Solution (v0.3.1): Integrate yaw_rate over one full gait cycle
+    # using the FL hip oscillator phase as timing reference. The
+    # cyclic component integrates to zero; only the drift-component
+    # mean survives. This is a synchronous detector.
+    #
+    # Biology: The cerebellar flocculus integrates vestibular input
+    # phase-locked to the gait cycle, not over a fixed time window.
+    # Ref: Ito 1984 — Cerebellum and Neural Control, cerebellar feedback
+    #
+    # vestibular_gain: How strongly drift estimate modulates tonic drive.
+    #   Too low → drift persists. Too high → oscillatory overcorrection.
+    #
+    # vestibular_output_smoothing: Smoothing applied to the correction
+    #   output (NOT the raw yaw_rate). Makes correction changes at
+    #   cycle boundaries gradual rather than step-wise.
+    # Gain kept at 0.3 despite empirical observation that this alone doesn't
+    # eliminate drift in a short isolated test. Biologically, the spinal
+    # vestibular reflex is a WEAK, FAST, hardwired safety net — it prevents
+    # catastrophic drift but does not produce perfect straight walking. That
+    # perfection comes from cerebellar calibration over many gait cycles
+    # (Marr-Albus-Ito cycle: climbing fiber error signals → PF→PkC LTD/LTP
+    # → refined DCN output). In isolation (no cerebellum, no SNN), young
+    # animals also wobble and circle — it's the system that learns, not
+    # the reflex. Raising the gain to compensate for a missing cerebellum
+    # would be the wrong fix.
+    vestibular_gain: float = 0.3
+    vestibular_output_smoothing: float = 0.98  # Smooths cycle-to-cycle correction changes
+
+    # Dead-band threshold for vestibular correction (v0.3.2).
+    # If |drift_estimate| < this value, the correction is zeroed out.
+    # The cycle-integrator still runs and updates drift_estimate for
+    # logging and future learning — only the motor correction is gated.
+    #
+    # Empirical basis: on the Freenove body, gait-synchronous residual
+    # drift after cycle-integration is typically 0.05–0.25 rad/s.
+    # Real disturbances (shove, slope) produce |drift| > 0.4 rad/s.
+    # Threshold 0.3 catches all gait noise and lets real events through.
+    #
+    # Set to 0.0 to disable the dead-band (v0.3.1 behavior).
+    vestibular_dead_band: float = 0.3
 
 
 class IzhikevichCPGNeuron:
@@ -233,8 +332,10 @@ class MogliCPG:
     Layer 2 (Pattern Formation): Phase extracted from oscillators is
         mapped to joint angles using sin(phase) — identical to SpinalCPG.
 
-    This means: Forward walking, steering, reflexes all work identically
-    to SpinalCPG. The only difference is the rhythm source.
+    v0.3.0: Vestibulospinal reflex closes the loop between IMU and CPG.
+    Gyroscope yaw-rate modulates L/R tonic drive asymmetrically to
+    correct heading drift. Without this, the oscillators run open-loop
+    and the robot walks in circles.
 
     API-compatible with SpinalCPG.compute() for drop-in replacement.
     """
@@ -285,12 +386,39 @@ class MogliCPG:
         self._gain_modulation = 1.0
         self._babbling_noise = 0.0
 
+        # Vestibulospinal reflex state (v0.3.1 — cycle-integrator)
+        self._yaw_rate_accumulator = 0.0   # Accumulates yaw_rate * dt over current gait cycle
+        self._cycle_time_accumulator = 0.0  # Accumulates dt over current gait cycle
+        self._prev_ref_phase = 0.0          # FL hip phase at previous step (for wraparound detection)
+        self._drift_estimate = 0.0          # Last completed cycle's mean yaw_rate (rad/s)
+        self._vestibular_correction = 0.0   # Current L/R drive correction (smoothed output)
+        self._cycles_completed = 0          # Count of full gait cycles seen
+
+        # Cerebellar gain modifier (v0.3.2 — vestibular gain learning).
+        # Multiplicative factor applied to config.vestibular_gain. Set by the
+        # trainer each step from cerebellum.get_vestibular_gain_correction().
+        # 1.0 = neutral (puppy); >1.0 = cerebellum learned drift needs more push;
+        # <1.0 = cerebellum learned the reflex was overshooting.
+        self._vestibular_gain_mod = 1.0
+
         self.stats = {'freq_estimate': 0.0, 'left_right_phase': 0.0}
 
     def compute(self, dt: float = 0.005, arousal: float = 0.5,
                 freq_scale: float = 1.0, amp_scale: float = 1.0,
-                steering: float = 0.0) -> np.ndarray:
-        """Generate motor commands. API-compatible with SpinalCPG."""
+                steering: float = 0.0, yaw_rate: float = 0.0) -> np.ndarray:
+        """Generate motor commands. API-compatible with SpinalCPG.
+
+        Args:
+            dt: Simulation timestep (seconds).
+            arousal: Neuromodulatory arousal level (0-1).
+            freq_scale: CPG frequency multiplier.
+            amp_scale: CPG amplitude multiplier.
+            steering: External steering command (-1 to +1).
+            yaw_rate: Gyroscope Z-axis angular velocity (rad/s).
+                Positive = turning left (counterclockwise from above).
+                From IMU sensor_data['angular_velocity'][2].
+                On hardware: MPU6050 gyro_z.
+        """
         cfg = self.config
         self._step += 1
 
@@ -321,13 +449,107 @@ class MogliCPG:
         # Steering (same as SpinalCPG)
         steering_clamped = np.clip(steering, -0.6, 0.6)
 
+        # === VESTIBULOSPINAL REFLEX v0.3.1 (cycle-integrator) ===
+        # Biology: The lateral vestibulospinal tract (LVST) modulates
+        # extensor tone based on vestibular input. The cerebellar
+        # flocculus calibrates this reflex phase-locked to the gait
+        # cycle — it extracts the drift component from the vestibular
+        # signal and suppresses the gait-synchronous oscillation that
+        # is an expected consequence of walking.
+        #
+        # Implementation: Synchronous detector using FL hip phase as
+        # gait reference. Over one full cycle, the periodic yaw
+        # oscillation integrates to zero (positive and negative
+        # half-waves cancel); only the constant drift-offset survives.
+        # At cycle boundary (phase wraps from ~2π to ~0), update the
+        # drift estimate and reset the accumulators.
+        #
+        # The correction EMA smooths step changes at cycle boundaries.
+        # On hardware: MPU6050 gyro_z provides yaw_rate directly.
+        # Bridge v2.5 already has 4 IMU channels. No sim-only hack.
+        #
+        # Ref: Ito 1984 — Cerebellum and Neural Control (flocculus)
+        # Ref: Wilson & Melvill Jones 1979 — vestibular reflex physiology
+        # Ref: Orlovsky 1972 — Vestibulospinal influences on locomotion
+
+        # Reference gait phase = FL hip oscillator phase (wraps at 2π)
+        ref_phase = self.oscillators['FL_hip'].get_phase() % (2.0 * np.pi)
+
+        # Accumulate over this step
+        self._yaw_rate_accumulator += yaw_rate * dt
+        self._cycle_time_accumulator += dt
+
+        # Detect cycle boundary: phase wraps from high (~2π) to low (~0)
+        # Guard against boundary detection before first cycle completes
+        # by requiring a minimum accumulated time (skips the startup phase).
+        cycle_boundary = (ref_phase < self._prev_ref_phase and
+                          self._cycle_time_accumulator > 0.1)  # At least 100ms
+
+        if cycle_boundary:
+            # Mean yaw_rate over the completed cycle = drift estimate
+            # (periodic component integrates to ~0, leaving only DC/drift)
+            self._drift_estimate = (self._yaw_rate_accumulator /
+                                    max(self._cycle_time_accumulator, 1e-6))
+            self._cycles_completed += 1
+            self._yaw_rate_accumulator = 0.0
+            self._cycle_time_accumulator = 0.0
+
+        self._prev_ref_phase = ref_phase
+
+        # Compute target correction from drift estimate.
+        # Negative correction opposes the rotation (negative feedback).
+        # Effective gain = configured gain * cerebellar learned modifier.
+        # The modifier is set by the trainer via set_vestibular_gain_mod()
+        # from the cerebellum's learned gain correction. At startup it is 1.0
+        # (= configured gain unchanged). As the cerebellum detects persistent
+        # drift it raises this modifier, strengthening the reflex; when it
+        # detects oscillation it lowers it.
+        effective_gain = cfg.vestibular_gain * self._vestibular_gain_mod
+
+        # Dead-band (v0.3.2): if drift is within the gait-noise floor,
+        # don't correct. The reflex only fires on real disturbances.
+        # The drift_estimate and cycle-integrator keep running regardless
+        # — this only gates the motor output.
+        if abs(self._drift_estimate) < cfg.vestibular_dead_band:
+            target_correction = 0.0
+        else:
+            target_correction = np.clip(
+                -self._drift_estimate * effective_gain,
+                -0.20 * base_drive,
+                0.20 * base_drive,
+            )
+
+        # Smooth step-changes at cycle boundaries to avoid abrupt
+        # drive shifts (which would themselves look like commanded turns).
+        alpha = cfg.vestibular_output_smoothing
+        self._vestibular_correction = (
+            alpha * self._vestibular_correction + (1.0 - alpha) * target_correction
+        )
+
         # Step rhythm generators and extract phases
         coupling = self._compute_coupling()
 
         for leg_idx, leg_name in enumerate(self._leg_names):
             is_left = (leg_idx % 2 == 0)
-            drive_mod = 1.0 + steering_clamped * 0.3 * (1.0 if is_left else -1.0)
-            leg_drive = base_drive * drive_mod
+
+            # v0.3.3: No drive-mod steering in the Rhythm Generator.
+            # Drive-mod (L/R tonic drive asymmetry) was removed because
+            # the inter-leg coupling synchronizes oscillator frequencies
+            # and cancels the asymmetry, except at resonance points where
+            # it causes unpredictable spinning. Steering is now handled
+            # entirely in the Pattern Formation Layer via step-length
+            # asymmetry (see below).
+            leg_drive = base_drive
+
+            # Vestibulospinal correction: involuntary heading maintenance
+            # Left legs get +correction, right legs get -correction.
+            # If yaw_rate > 0 (turning left), correction < 0, so:
+            #   left legs: drive decreases → shorter stance
+            #   right legs: drive increases → longer stance → turn right
+            if is_left:
+                leg_drive += self._vestibular_correction
+            else:
+                leg_drive -= self._vestibular_correction
 
             if self._babbling_noise > 0:
                 leg_drive *= (1.0 + np.random.uniform(
@@ -352,7 +574,25 @@ class MogliCPG:
         for leg_idx in range(self.n_legs):
             phase = self._phases[leg_idx]
             base = leg_idx * self.jpleg
-            leg_amplitude = amplitude
+            is_left = (leg_idx % 2 == 0)
+
+            # === STEP-LENGTH STEERING (v0.3.3) ===
+            # Modulate hip amplitude per side to create turning.
+            # Positive steering = turn left:
+            #   left legs (inner) get shorter steps (amplitude * (1 - gain))
+            #   right legs (outer) get longer steps (amplitude * (1 + gain))
+            # This is how real quadrupeds turn: the inner legs take
+            # shorter steps, the outer legs take longer steps.
+            # The gain is proportional to |steering| and capped so that
+            # the inner leg never goes below 30% amplitude (still walks,
+            # just shorter) and the outer leg never exceeds 170%.
+            # Ref: Maes & Abourachid 2013 — quadruped turning kinematics
+            steer_gain = steering_clamped * 0.25  # ±0.15 at max steering
+            if is_left:
+                leg_amplitude = amplitude * (1.0 - steer_gain)
+            else:
+                leg_amplitude = amplitude * (1.0 + steer_gain)
+            leg_amplitude = max(leg_amplitude, amplitude * 0.3)
 
             # Raw sine for this leg
             raw_sin = np.sin(phase)
@@ -363,16 +603,9 @@ class MogliCPG:
             else:
                 power = cfg.swing_power
 
-            # ABD
+            # ABD (v0.3.3: no steering offset, just gait-synchronous splay)
             if self.jpleg >= 1:
                 abd_cmd = raw_sin * cfg.abd_amplitude * leg_amplitude * 0.5
-                if abs(steering_clamped) > 0.02:
-                    is_left = (leg_idx % 2 == 0)
-                    steer_offset = steering_clamped * cfg.abd_amplitude * 5.0
-                    if is_left:
-                        abd_cmd += steer_offset
-                    else:
-                        abd_cmd -= steer_offset
                 commands[base + 0] = abd_cmd
 
             # HIP (identical to SpinalCPG)
@@ -388,6 +621,20 @@ class MogliCPG:
                 commands[base + 2] = knee_cmd
 
         return np.clip(commands, -1.0, 1.0)
+
+    def set_vestibular_gain_mod(self, mod: float):
+        """Receive cerebellar learned gain modifier.
+
+        Signed modifier: positive values preserve the hardwired reflex
+        direction, negative values INVERT it (the cerebellum can discover
+        that the reflex polarity is wrong for this body and flip it).
+        Magnitude in [0, 3] allows up to 3x stronger reflex.
+        """
+        self._vestibular_gain_mod = float(np.clip(mod, -3.0, 3.0))
+
+    def get_vestibular_gain_mod(self) -> float:
+        """Current cerebellar gain modifier (for logging)."""
+        return self._vestibular_gain_mod
 
     def _compute_coupling(self) -> Dict[str, float]:
         """Compute inter-leg coupling signals."""
@@ -420,9 +667,11 @@ class MogliCPG:
         self._coupling_eligibility *= 0.3
 
     def compute_tendon(self, dt=0.005, arousal=0.5,
-                       freq_scale=1.0, amp_scale=1.0):
+                       freq_scale=1.0, amp_scale=1.0,
+                       yaw_rate=0.0):
         return self.compute(dt=dt, arousal=arousal,
-                           freq_scale=freq_scale, amp_scale=amp_scale)
+                           freq_scale=freq_scale, amp_scale=amp_scale,
+                           yaw_rate=yaw_rate)
 
     def get_phase_input(self) -> np.ndarray:
         """Get CPG phase for sensor encoding (Bridge compatibility)."""
@@ -451,6 +700,12 @@ class MogliCPG:
         stats['coupling_contra'] = float(self.coupling_weights[0, 1])
         stats['coupling_ipsi'] = float(self.coupling_weights[0, 2])
         stats['coupling_diag'] = float(self.coupling_weights[0, 3])
+
+        # Vestibulospinal reflex stats (v0.3.1 cycle-integrator)
+        stats['drift_estimate'] = self._drift_estimate
+        stats['vestibular_correction'] = self._vestibular_correction
+        stats['vestibular_cycles'] = self._cycles_completed
+        stats['vestibular_gain_mod'] = self._vestibular_gain_mod
         return stats
 
     def reset_episode(self):
@@ -467,3 +722,10 @@ class MogliCPG:
             phase = self.config.initial_phase_offsets[leg_idx]
             osc.set_initial_phase(phase)
             self._phases[leg_idx] = phase * 2.0 * np.pi
+        # Reset vestibular state (v0.3.1 cycle-integrator)
+        self._yaw_rate_accumulator = 0.0
+        self._cycle_time_accumulator = 0.0
+        self._prev_ref_phase = 0.0
+        self._drift_estimate = 0.0
+        self._vestibular_correction = 0.0
+        self._cycles_completed = 0

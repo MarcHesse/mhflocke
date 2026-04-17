@@ -1,7 +1,7 @@
 # FLOG Binary Format — Structure Documentation
 
-**MH-FLOCKE Level 15 v0.4.x**
-**Document Version:** 1.0 — March 22, 2026
+**MH-FLOCKE Level 15 v0.5.0**
+**Document Version:** 1.1 — April 15, 2026
 
 ---
 
@@ -195,6 +195,46 @@ Recorded every 1000 steps. Contains all brain/body metrics.
 | terrain_reflex_mag | float  | Terrain reflex magnitude                   |
 | terrain_pitch_ema  | float  | Terrain pitch EMA                          |
 | terrain_roll_ema   | float  | Terrain roll EMA                           |
+
+**IMU / Vestibular (v0.5.0, Issues #121, #122):**
+
+| Key                   | Type   | Description                                |
+|-----------------------|--------|--------------------------------------------|
+| yaw_rate              | float  | Gyroscope Z raw (rad/s, >0 = turning left) |
+| yaw_rate_ema          | float  | Smoothed yaw rate (Mogli only, EMA α=0.98) |
+| vestibular_correction | float  | L/R tonic drive correction (Mogli only)    |
+| pitch_rate            | float  | Gyroscope Y (rad/s)                        |
+| roll_rate             | float  | Gyroscope X (rad/s)                        |
+| yaw                   | float  | Orientation yaw (Euler, rad)               |
+| pitch                 | float  | Orientation pitch (Euler, rad)             |
+| roll                  | float  | Orientation roll (Euler, rad)              |
+| y                     | float  | Y position (for drift/circle detection)    |
+
+**Obstacle Avoidance (v0.5.0, Issue #121):**
+
+| Key                | Type   | Description                                |
+|--------------------|--------|--------------------------------------------|
+| obstacle_distance  | float  | HC-SR04 / rangefinder distance (m, -1=none)|
+
+**Mogli Oscillator (v0.5.0, --neural-cpg only):**
+
+Per-leg keys prefixed `mogli_` from `MogliCPG.get_stats()`:
+
+| Key                       | Type   | Description                          |
+|---------------------------|--------|--------------------------------------|
+| mogli_gain                | float  | CPG gain modulation                  |
+| mogli_{leg}_hip_flex_rate | float  | Flexor firing rate (per leg)         |
+| mogli_{leg}_hip_ext_rate  | float  | Extensor firing rate (per leg)       |
+| mogli_{leg}_hip_output    | float  | Half-center output EMA (per leg)     |
+| mogli_{leg}_hip_phase     | float  | Extracted phase in radians (per leg) |
+| mogli_coupling_mean       | float  | Mean abs coupling weight             |
+| mogli_coupling_contra     | float  | Contralateral coupling weight        |
+| mogli_coupling_ipsi       | float  | Ipsilateral coupling weight          |
+| mogli_coupling_diag       | float  | Diagonal coupling weight             |
+| mogli_yaw_rate_ema        | float  | Vestibular smoothed yaw rate         |
+| mogli_vestibular_correction| float | Vestibular L/R drive correction      |
+
+Where `{leg}` is one of: `FL`, `FR`, `RL`, `RR`.
 
 **Olfactory / Sensory:**
 

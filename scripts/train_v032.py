@@ -684,10 +684,11 @@ def main():
         # Mogli Oscillator: SNN-based half-center CPG (Issue #111)
         mogli_cfg = MogliConfig()
         spinal_cpg = MogliCPG(n_actuators=12, joints_per_leg=3, config=mogli_cfg)
-        print(f'  CPG: MOGLI OSCILLATOR v0.2.1 (8 Izhikevich half-center neurons)')
+        print(f'  CPG: MOGLI OSCILLATOR v0.3.3 (8 Izhikevich neurons + dead-band vestibular + step-length steering)')
         print(f'    w_mutual={mogli_cfg.w_mutual}  w_contra={mogli_cfg.w_contralateral}'
               f'  drive={mogli_cfg.tonic_drive_base}  amp={mogli_cfg.base_amplitude}→{mogli_cfg.max_amplitude}'
               f'  mat={mogli_cfg.maturation_steps}')
+        print(f'    vestibular: gain={mogli_cfg.vestibular_gain}  dead_band={mogli_cfg.vestibular_dead_band}  output_smoothing={mogli_cfg.vestibular_output_smoothing}')
     elif cpg_config_path:
         spinal_cpg = SpinalCPG.from_evolved(cpg_config_path, n_actuators=12, joints_per_leg=3)
         print(f'  CPG: evolved params from {cpg_config_path}')
@@ -712,10 +713,14 @@ def main():
             drive_bridge = DriveMotorBridge(
                 creature_type='dog',
                 scene_instruction=scene_inst,
+                drive_limits=profile.get('drive_limits') if profile else None,
             )
             print(f'\n  -- Drive Loop: ACTIVE --')
             print(f'  Behaviors: {", ".join(drive_bridge.knowledge.get_all_names())}')
             print(f'  Drive → BehaviorPlanner → MotorPattern → CPG freq/amp modulation')
+            if profile and 'drive_limits' in profile:
+                dl = profile['drive_limits']
+                print(f'  Drive limits: freq={dl.get("freq_min", "none")}-{dl.get("freq_max", "none")} amp={dl.get("amp_min", "none")}-{dl.get("amp_max", "none")}')
         except Exception as e:
             print(f'\n  Drive Loop: init failed ({e}), running without drives')
             drive_bridge = None
@@ -932,6 +937,16 @@ def main():
     _STUCK_THRESHOLD_STEPS = 200  # ~6 seconds at 30ms/step
     _STUCK_VELOCITY_MAX = 0.005   # m/s — basically motionless
     _STUCK_UPRIGHT_MAX = 0.7      # below this = not standing properly
+
+    # Issue #125: Progress-based stuck detection
+    # The upright-based detector misses cases where the robot stands
+    # upright (0.83) but walks in place or rolls without forward progress.
+    # This detector resets if the robot makes zero forward progress
+    # for an extended period, regardless of upright state.
+    # Biology: a dog that isn't going anywhere needs help.
+    _progress_stuck_counter = 0
+    _PROGRESS_STUCK_STEPS = 500   # ~15 seconds — longer than upright detector
+    _progress_last_max_dist = 0.0
 
     # --- Issue #103: Wall episode state ---
     wall_episode_count = 0
@@ -1216,6 +1231,8 @@ def main():
             creature._was_fallen = False
             creature._prev_x = float(world._data.qpos[0])
             _stuck_counter = 0  # Issue #110: reset stuck counter
+            _progress_stuck_counter = 0  # Issue #125: reset progress detector
+            _progress_last_max_dist = 0.0
             # Restore ball position after reset (keyframe reset zeros all qpos)
             _ball_id_reset = mujoco.mj_name2id(world._model, mujoco.mjtObj.mjOBJ_BODY, 'ball')
             if _ball_id_reset >= 0:
@@ -1254,6 +1271,8 @@ def main():
                 is_fallen = False
                 creature._was_fallen = False
                 creature._prev_x = float(world._data.qpos[0])
+                _progress_stuck_counter = 0  # Issue #125
+                _progress_last_max_dist = 0.0
                 # Restore ball position
                 _ball_id_stuck = mujoco.mj_name2id(world._model, mujoco.mjtObj.mjOBJ_BODY, 'ball')
                 if _ball_id_stuck >= 0:
@@ -1626,21 +1645,33 @@ def main():
         if _wall_pause_counter > 0:
             _proximity_amp_scale = 0.0
 
-        if is_external_mjcf:
-            # Go2: direct joint control (per-joint amplitudes)
-            cpg_cmd = spinal_cpg.compute(
-                dt=args.timestep, arousal=ne_lvl,
-                freq_scale=current_freq_scale * tr_freq * _cpg_freq_direction,
-                amp_scale=current_amp_scale * tr_amp * _proximity_amp_scale,
-                steering=_cpg_steering,
-            )
+        # Vestibulospinal reflex (Issue #122): extract yaw rate from IMU
+        # sensor_data['angular_velocity'] = [wx, wy, wz] in rad/s
+        # wz > 0 = turning left (counterclockwise from above)
+        # On hardware: MPU6050 gyro_z provides the same signal.
+        _yaw_rate = float(sensor_data.get('angular_velocity', [0, 0, 0])[2])
+
+        # Build CPG kwargs — yaw_rate only for Mogli (SpinalCPG doesn't use it)
+        _cpg_kwargs = dict(
+            dt=args.timestep, arousal=ne_lvl,
+            freq_scale=current_freq_scale * tr_freq * _cpg_freq_direction,
+            amp_scale=current_amp_scale * tr_amp * _proximity_amp_scale,
+        )
+        _is_mogli = hasattr(spinal_cpg, '_drift_estimate')
+        if _is_mogli:
+            _cpg_kwargs['steering'] = _cpg_steering
+            _cpg_kwargs['yaw_rate'] = _yaw_rate
+
+        if _is_mogli:
+            # Mogli: always use compute() (handles both Freenove and Go2)
+            cpg_cmd = spinal_cpg.compute(**_cpg_kwargs)
+        elif is_external_mjcf:
+            # Go2 with SpinalCPG: direct joint control
+            _cpg_kwargs['steering'] = _cpg_steering
+            cpg_cmd = spinal_cpg.compute(**_cpg_kwargs)
         else:
-            # Bommel: tendon-coupled actuators
-            cpg_cmd = spinal_cpg.compute_tendon(
-                dt=args.timestep, arousal=ne_lvl,
-                freq_scale=current_freq_scale * tr_freq * _cpg_freq_direction,
-                amp_scale=current_amp_scale * tr_amp * _proximity_amp_scale,
-            )
+            # Bommel with SpinalCPG: tendon-coupled actuators
+            cpg_cmd = spinal_cpg.compute_tendon(**_cpg_kwargs)
 
         gate.update(step, vel_mps, is_fallen, upright=upright)
         cpg_weight = gate.get_cpg_weight()
@@ -1705,6 +1736,37 @@ def main():
         d = creature.get_distance_traveled()
         if d > max_dist:
             max_dist = d
+
+        # Issue #125: Progress-based stuck detection
+        # Catches robots that are technically upright but making no forward
+        # progress (rolling in place, oscillating, stuck against nothing).
+        # The upright-based detector (#110) misses cases where upright > 0.7
+        # but the robot walks in place. This detector only checks whether
+        # max_dist is growing.
+        if auto_reset_limit > 0 and not is_fallen and step > 1000:
+            if d <= _progress_last_max_dist:
+                _progress_stuck_counter += 1
+            else:
+                _progress_stuck_counter = 0
+                _progress_last_max_dist = d
+            if _progress_stuck_counter >= _PROGRESS_STUCK_STEPS:
+                if world._model.nkey > 0:
+                    mujoco.mj_resetDataKeyframe(world._model, world._data, 0)
+                else:
+                    world._data.qpos[:] = 0
+                    world._data.qvel[:] = 0
+                    world._data.qpos[2] = standing_h + 0.02
+                mujoco.mj_forward(world._model, world._data)
+                _progress_stuck_counter = 0
+                _progress_last_max_dist = 0.0  # Reset distance threshold
+                consecutive_fallen = 0
+                _stuck_counter = 0
+                reset_count += 1
+                is_fallen = False
+                creature._was_fallen = False
+                creature._prev_x = float(world._data.qpos[0])
+                if reset_count <= 10 or reset_count % 10 == 0:
+                    print(f'  [PROGRESS RESET #{reset_count} at step {step} — no dist gain for {_PROGRESS_STUCK_STEPS} steps, up={upright:.2f}]')
         step_dt = time.perf_counter() - t_step
         step_times.append(step_dt)
 
@@ -1725,6 +1787,14 @@ def main():
 
         if recorder and step % log_every == 0 and step > 0:
             try:
+                # Helper: safe attribute read with default, so missing attrs
+                # don't crash the whole stats write. Without this, one stale
+                # attribute reference tanks the entire FLOG output.
+                def _safe(obj, attr, default=0.0):
+                    try:
+                        return getattr(obj, attr, default)
+                    except Exception:
+                        return default
                 flog_data = {'phase': 'level15', 'step': step, 'distance': d, 'max_distance': max_dist,
                     'falls': fall_count, 'reward': reward, 'upright': upright,
                     'is_fallen': 1 if is_fallen else 0, 'recoveries': recovery_count,
@@ -1777,6 +1847,13 @@ def main():
                 flog_data['dev_perturb'] = dev_stats['perturb_magnitude']
                 flog_data['dev_fm_gain'] = dev_stats['forward_model_gain']
                 flog_data['dev_competence'] = dev_schedule._competence_ema
+                # Issue #122: Vestibulospinal reflex stats
+                # v0.3.1 cycle-integrator writes drift_estimate + vestibular_cycles.
+                # Any missing attribute simply defaults to 0.0 (no crash).
+                flog_data['yaw_rate'] = _yaw_rate
+                flog_data['drift_estimate'] = _safe(spinal_cpg, '_drift_estimate', 0.0)
+                flog_data['vestibular_correction'] = _safe(spinal_cpg, '_vestibular_correction', 0.0)
+                flog_data['vestibular_cycles'] = _safe(spinal_cpg, '_cycles_completed', 0)
                 emo = brain_result.get('emotion', {})
                 drv_r = brain_result.get('drives', {})
                 flog_data['emotion_dominant'] = emo.get('dominant_emotion', '')
@@ -1819,9 +1896,37 @@ def main():
                     for si, sc in enumerate(sensory_env._scents):
                         flog_data[f'scent_{si}_x'] = float(sc.position[0])
                         flog_data[f'scent_{si}_y'] = float(sc.position[1])
+                # Issue #121: Extended sensor data for analysis
+                # Obstacle distance (HC-SR04 / MuJoCo rangefinder)
+                flog_data['obstacle_distance'] = float(sensor_data.get('obstacle_distance', -1.0))
+                # IMU: yaw as separate float (angular_velocity Z-axis)
+                _ang_vel = sensor_data.get('angular_velocity', np.zeros(3))
+                flog_data['pitch_rate'] = float(_ang_vel[1])
+                flog_data['roll_rate'] = float(_ang_vel[0])
+                # Orientation (for heading analysis)
+                _orient = sensor_data.get('orientation_euler', np.zeros(3))
+                flog_data['yaw'] = float(_orient[2]) if len(_orient) > 2 else 0.0
+                flog_data['pitch'] = float(_orient[1]) if len(_orient) > 1 else 0.0
+                flog_data['roll'] = float(_orient[0]) if len(_orient) > 0 else 0.0
+                # Y position (for drift/circle detection)
+                flog_data['y'] = float(world._data.qpos[1])
+                # Mogli Oscillator stats (per-leg phase, firing rates, coupling)
+                if hasattr(spinal_cpg, 'oscillators'):
+                    mogli_stats = spinal_cpg.get_stats()
+                    for mk, mv in mogli_stats.items():
+                        flog_data[f'mogli_{mk}'] = float(mv)
                 recorder.record_training_stats(flog_data)
             except Exception as e:
-                print(f'  ⚠ FLOG stats write failed at step {step}: {e}')
+                # Show traceback ONCE so we can diagnose persistent failures;
+                # subsequent failures show only the message to avoid log spam.
+                if not hasattr(main, '_flog_stats_tb_shown'):
+                    import traceback
+                    print(f'  ⚠ FLOG stats write failed at step {step}: {e}')
+                    print('  Full traceback (shown once):')
+                    traceback.print_exc()
+                    main._flog_stats_tb_shown = True
+                else:
+                    print(f'  ⚠ FLOG stats write failed at step {step}: {e}')
 
         if step > 0 and step % log_every == 0:
             avg_ms = np.mean(step_times[-log_every:]) * 1000
@@ -1867,6 +1972,11 @@ def main():
                 line3 += f'  inh:{_combined_inhibition:.2f} {_rfx_state}'
                 if _reflex_turn_steering > 0.01:
                     line3 += f' T:{_reflex_turn_steering:.2f}'
+            # Issue #122: Vestibulospinal reflex
+            if hasattr(spinal_cpg, '_drift_estimate'):
+                line3 += f'  yr:{_yaw_rate:+.3f}  dr:{spinal_cpg._drift_estimate:+.3f}  vc:{spinal_cpg._vestibular_correction:+.2f}'
+            elif hasattr(spinal_cpg, '_yaw_rate_ema'):
+                line3 += f'  yr:{spinal_cpg._yaw_rate_ema:+.3f}  vc:{spinal_cpg._vestibular_correction:+.2f}'
             # Issue #75: sensory info
             if sensory_env:
                 sm = sensor_data.get('smell_strength', 0.0)
