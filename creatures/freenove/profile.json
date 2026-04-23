@@ -1,7 +1,7 @@
 {
   "name": "freenove",
   "display_name": "Freenove Robot Dog (FNK0050)",
-  "version": "3.0",
+  "version": "4.0",
   "creature_type": "quadruped",
 
   "n_joints": 13,
@@ -36,9 +36,9 @@
 
   "snn": {
     "n_input": 48,
-    "n_hidden": 172,
+    "n_hidden": 500,
     "n_output": 12,
-    "n_total": 232,
+    "n_total": 560,
     "tonic_current": 10.0
   },
 
@@ -52,7 +52,10 @@
   "hardware": {
     "compute": "Raspberry Pi 4",
     "hostname": "robot",
-    "bridge": "scripts/freenove_bridge.py v2.4",
-    "cost_eur": 100
+    "bridge": "scripts/freenove_bridge.py v4.1",
+    "cost_eur": 100,
+    "measured_hz": 77,
+    "measured_ms_per_step": 12.9,
+    "benchmark_date": "2026-04-19"
   }
 }

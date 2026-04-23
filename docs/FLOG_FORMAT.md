@@ -216,6 +216,54 @@ Recorded every 1000 steps. Contains all brain/body metrics.
 |--------------------|--------|--------------------------------------------|
 | obstacle_distance  | float  | HC-SR04 / rangefinder distance (m, -1=none)|
 
+**v0.7.0 Pillars — Body Awareness, Spatial Map, Gait Quality, Directed Learning:**
+
+| Key                | Type   | Description                                |
+|--------------------|--------|--------------------------------------------|
+| gait_quality       | float  | Composite gait quality score (0-1)         |
+| gait_periodicity   | float  | Joint autocorrelation score (0-1)          |
+| gait_jitter        | float  | Joint velocity std (lower = smoother)      |
+| gait_height_ratio  | float  | Current / standing height ratio            |
+| gait_step_amplitude| float  | Average joint range of motion              |
+| body_dead_limbs    | int    | Number of limbs detected as dead           |
+| body_degraded_limbs| int    | Number of limbs detected as degraded       |
+| body_responsiveness| float  | Minimum limb responsiveness score          |
+| spatial_x          | float  | Estimated X position (path integration)    |
+| spatial_y          | float  | Estimated Y position (path integration)    |
+| spatial_heading    | float  | Estimated heading (radians)                |
+| spatial_total_dist | float  | Odometer: total distance traveled (m)      |
+| spatial_max_excursion| float | Max distance from start point (m)          |
+| spatial_explored   | float  | Fraction of grid cells visited (0-1)       |
+| spatial_landmarks  | int    | Number of known landmarks                  |
+| dl_tried           | int    | Directed Learning: hypotheses tested       |
+| dl_successful      | int    | Directed Learning: successful adaptations  |
+| dl_success_rate    | float  | Success rate (0-1)                         |
+| dl_memory_size     | int    | Adaptation memory entries                  |
+| dl_testing         | string | Currently testing hypothesis (or empty)    |
+| dl_best_known      | int    | Number of best-known adaptations           |
+| dl_freq_mod        | float  | Frequency modifier from DL                 |
+
+**v0.7.0 Motor Hidden (motorcortex activity):**
+
+| Key                | Type   | Description                                |
+|--------------------|--------|--------------------------------------------|
+| mh_spike_count     | int    | Total MH neuron spikes this interval       |
+| mh_spike_rate      | float  | MH spikes per neuron (activity level)      |
+| mh_n_neurons       | int    | Number of motor hidden neurons             |
+
+**Header Metadata — population_sizes (v0.7.0):**
+
+| Key              | Type   | Description                                |
+|------------------|--------|--------------------------------------------|
+| n_input          | int    | Input (mossy fiber) neuron count           |
+| n_output         | int    | Output (motoneuron) count                  |
+| n_granule        | int    | Granule cell count                         |
+| n_golgi          | int    | Golgi cell count                           |
+| n_purkinje       | int    | Purkinje cell count                        |
+| n_dcn            | int    | Deep cerebellar nuclei count               |
+| n_motor_hidden   | int    | Motor hidden (motorcortex) count           |
+| n_total          | int    | Total neuron count                         |
+
 **Mogli Oscillator (v0.5.0, --neural-cpg only):**
 
 Per-leg keys prefixed `mogli_` from `MogliCPG.get_stats()`:

@@ -454,10 +454,10 @@ def _save_synaptogenesis(synapto) -> dict:
         for r in synapto.graph._relations
     ]
     
-    # Experience Buffer
+    # Experience Buffer (deque doesn't support slicing — convert to list first)
     buffer_data = []
     if hasattr(synapto, 'buffer') and hasattr(synapto.buffer, '_buffer'):
-        for entry in synapto.buffer._buffer[-500:]:
+        for entry in list(synapto.buffer._buffer)[-500:]:
             if hasattr(entry, 'pattern'):
                 buffer_data.append({
                     'pattern': entry.pattern.cpu().tolist() if torch.is_tensor(entry.pattern) else entry.pattern,

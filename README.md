@@ -14,7 +14,7 @@
 
 A simulated quadruped learns to walk through a 15-step closed-loop cognitive architecture integrating Izhikevich spiking neural networks, cerebellar forward models with DCN rebound bursting, central pattern generators, embodied emotions, and reward-modulated spike-timing-dependent plasticity — no end-to-end RL required.
 
-**v0.6.0:** The dog now walks straight (12.4m), steers reliably (R²=0.97), follows a moving ball (1.64m mean distance), survives leg loss, and runs the full 15-step CognitiveBrain loop with autonomous behavior selection.
+**v0.7.0:** Baby-KI with Run-and-Tumble chemotaxis navigation. The dog finds scent targets autonomously using pure intrinsic reward — no external reward signal. 5.43m, 0 falls, 4 targets found. New modules: Body Awareness, Spatial Map, Gait Quality, Directed Learning. SNN scaled to 560 neurons on Pi4 at 77 Hz.
 
 ## Key Results (10-Seed Validation, Unitree Go2)
 
@@ -68,10 +68,10 @@ The Raspberry Pi 4 runs the **same SNN and cerebellum code** as the MuJoCo simul
 - Kit: [Freenove FNK0050](https://www.freenove.com/fnk0050) (~100€)
 - Compute: Raspberry Pi 4 (2GB+ RAM)
 - 12 SG90 servos, PCA9685 driver, MPU6050 IMU, HC-SR04 ultrasonic
-- SNN: 232 Izhikevich neurons (48 MF + 106 GrC + 18 GoC + 24 PkC + 24 DCN + 12 OUT)
+- SNN: 560 Izhikevich neurons (48 MF + 269 GrC + 47 GoC + 24 PkC + 24 DCN + 136 MH + 12 OUT)
 - Per-population neuron dynamics: Regular Spiking, Intrinsically Bursting, Chattering, Rebound Burst
 - Obstacle reflexes: hardware-matched brainstem-level STOP/SLOW/REVERSE/TURN
-- Control loop: 29Hz with PyTorch CPU-only
+- Control loop: 77Hz with PyTorch CPU-only
 
 ### Running on Pi
 
@@ -176,7 +176,8 @@ The Brain3D visualization in rendered videos shows actual SNN topology and spike
 ```
 mhflocke/
 ├── scripts/
-│   ├── train_v032.py           # Main training loop
+│   ├── train_v032.py           # Main training loop (external reward)
+│   ├── train_baby.py           # Baby-KI training (intrinsic reward)
 │   ├── freenove_bridge.py      # Pi hardware bridge (unified codebase)
 │   ├── freenove_calibrate.py   # Servo calibration tool
 │   ├── render_go2_mujoco.py    # Go2 video renderer
@@ -242,6 +243,7 @@ git checkout v0.4.3-paper2
 
 ## Videos
 
+- [Baby-KI: Run-and-Tumble Navigation (No Reward)](https://www.youtube.com/@mhflocke) — NEW
 - [Freenove Robot Dog — SNN on Real Hardware](https://www.youtube.com/watch?v=7iN8tB2xLHI)
 - [Video #3: Go2 Ball Interaction](https://www.youtube.com/watch?v=Jo7UM6pEFMg)
 - [YouTube Channel: @mhflocke](https://www.youtube.com/@mhflocke)

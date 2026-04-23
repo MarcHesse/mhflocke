@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 """
-MH-FLOCKE — Level 15 Training v0.4.3
-=======================================
-"A dog doesn't stand still on a meadow."
+MH-FLOCKE — Baby-KI Training v0.8.0-alpha
+=========================================
+"A puppy learns to walk because falling feels bad and moving feels good."
+
+Based on train_v032.py v0.4.3 with ONE surgical change:
+  The reward signal sent to creature.step() is replaced by intrinsic reward
+  from CognitiveBrain.get_intrinsic_reward(). External reward is still
+  computed for FLOG logging and metrics but NOT used for learning.
+  --reward-blend controls the mix (0.0 = pure intrinsic, 1.0 = pure external).
 
 v0.4.3: Obstacle avoidance, graded DCN, additive CPG blending.
+v0.4.8: Run-and-Tumble chemotaxis replaces continuous olfactory steering.
 #   v0.4.2: Scalable SNN for hardware brain transfer.
   - --n-hidden: SNN hidden neuron count (default from profile.json)
   - --hardware-sensors: Bridge v2.5 sensor layout (12 servo + 2 CPG + 4 IMU)
@@ -248,7 +255,7 @@ def validate_morphology(xml_path, timestep=0.005):
             model = mujoco.MjModel.from_xml_path(xml_path)
         except Exception:
             # Fallback: load as string (legacy creatures without <include>)
-            with open(xml_path) as f:
+            with open(xml_path, encoding='utf-8') as f:
                 xml = f.read()
             xml = re.sub(r'timestep="[0-9.]+"', f'timestep="{timestep}"', xml)
             model = mujoco.MjModel.from_xml_string(xml)
@@ -265,7 +272,7 @@ def validate_morphology(xml_path, timestep=0.005):
 
 def patch_xml_timestep(xml_path, new_timestep=0.005):
     import re
-    with open(xml_path) as f:
+    with open(xml_path, encoding='utf-8') as f:
         xml = f.read()
     return re.sub(r'timestep="[0-9.]+"', f'timestep="{new_timestep}"', xml)
 
@@ -413,6 +420,10 @@ def main():
                         help='Step at which leg damage occurs (0=from start). '
                              'Biology: injury during locomotion. The creature must '
                              'detect the change and adapt autonomously.')
+    parser.add_argument('--reward-blend', type=float, default=0.0,
+                        help='Baby-KI reward blend: 0.0 = pure intrinsic (default), '
+                             '1.0 = pure external (v0.4.3 behavior). '
+                             '0.1 = 10%% external + 90%% intrinsic (Stufe 1).')
     args = parser.parse_args()
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -428,8 +439,15 @@ def main():
         torch.backends.cudnn.benchmark = False
 
     print(f'\n{"="*65}')
-    print(f'  MH-FLOCKE -- Level 15 v0.4.3')
-    print(f'  "A dog doesn\'t stand still on a meadow."')
+    print(f'  MH-FLOCKE -- Baby-KI v0.8.0-alpha')
+    print(f'  "A puppy learns to walk because falling feels bad."')
+    _blend = args.reward_blend
+    if _blend == 0.0:
+        print(f'  Reward: PURE INTRINSIC (no external reward)')
+    elif _blend == 1.0:
+        print(f'  Reward: PURE EXTERNAL (v0.4.3 behavior)')
+    else:
+        print(f'  Reward: BLEND {_blend:.0%} external + {1.0-_blend:.0%} intrinsic')
     print(f'{"="*65}')
     print(f'  Scene: "{args.scene}"')
     print(f'  Steps: {total_steps:,}  Device: {device}')
@@ -511,7 +529,7 @@ def main():
         os.makedirs('output', exist_ok=True)
         _needs_temp_xml = (terrain_cfg.terrain_type != 'flat') or _scene_has_ball or _scene_has_wall
         if _needs_temp_xml:
-            with open(xml_path) as f:
+            with open(xml_path, encoding='utf-8') as f:
                 xml_string = f.read()
             if terrain_cfg.terrain_type != 'flat':
                 xml_string = inject_terrain_geoms(xml_string, terrain_cfg)
@@ -587,6 +605,16 @@ def main():
     # Previous: interval=0 (disabled) or 100 (too expensive at 400ms/cycle).
     # At 500: ~40 dream cycles per 20k run, manageable overhead.
     creature.brain.config.dream_interval = 500
+    # Baby-KI: arousal drive disabled (v0.4.3-v0.4.5 experiments showed
+    # it hurts distance: 0.30m/0.47m/1.57m vs 3.37m baseline without it).
+    # RAS modulation doesn't help when the fundamental problem is that
+    # intrinsic reward is direction-agnostic. Stufe 3 (Sensory Environment)
+    # addresses this by giving the creature scent targets to walk toward.
+    # if args.reward_blend < 1.0:
+    #     creature.brain.config.intrinsic_arousal_drive = True
+    #     print(f'  Arousal Drive: INTERNAL (brain controls NE + tonic from arousal)')
+    print(f'  Arousal Drive: DISABLED (v0.4.5 conclusion: use Sensory Environment instead)')
+    print(f'  Olfactory: Run-and-Tumble v0.4.8 (RUN={40} TUMBLE={12} dead_zone={0.15:.2f}rad min_sm={0.10})')
     creature.per_joint_scale = None
     creature.body_name = root_body_name
     standing_h = profile.get('standing_height', 0.48) if profile else 0.48
@@ -804,8 +832,10 @@ def main():
                 print(f'  Sensory: BALL MODE -- target at ({ball_xpos[0]:.1f}, {ball_xpos[1]:.1f})')
             else:
                 # Normal scene: random scent sources for behavior motivation
-                sensory_env.spawn_scent(count=2, min_dist=2.0, max_dist=4.0)
-                print(f'  Sensory: 2 scent sources, sounds every ~2k steps')
+                # v0.4.6: closer (1-2m) for Baby-KI — baby can't walk far,
+                # needs reachable targets for scent reward to kick in
+                sensory_env.spawn_scent(count=2, min_dist=1.0, max_dist=2.0)
+                print(f'  Sensory: 2 scent sources (1-2m), sounds every ~2k steps')
         except Exception as e:
             print(f'  Sensory env: init failed ({e})')
             sensory_env = None
@@ -999,6 +1029,22 @@ def main():
     _wall_obs_cooldown = 0     # steps since last wall detection
     _wall_pause_counter = 0    # steps to stand still after wall contact before reset
     _WALL_PAUSE_STEPS = 50     # ~1.5s at 33 sps — visible "perplex" moment
+
+    # --- Run-and-Tumble chemotaxis state machine (v0.4.8) ---
+    # Biology: chemotaxis is NOT continuous steering. It is discrete:
+    #   SNIFF → TUMBLE (orient) → RUN (straight) → SNIFF again.
+    # Ref: Berg & Brown 1972 (E. coli), Catania 2013 (star-nosed mole).
+    # Continuous steering causes circling (v0.4.7 failure mode).
+    _RT_STATE = 'RUN'          # Current state: 'RUN', 'SNIFF', 'TUMBLE'
+    _RT_TIMER = 0              # Steps remaining in current state
+    _RT_RUN_DURATION = 40      # Steps per RUN phase (~1.3s at 33sps, ~1.5 gait cycles)
+    _RT_RUN_DURATION_BASE = 40 # Base value (adapts based on improvement)
+    _RT_RUN_DURATION_MAX = 120 # Max extended RUN (was 200 — shorter to stay near scents)
+    _RT_TUMBLE_DURATION = 12   # Steps per TUMBLE phase (~0.4s — quick head turn)
+    _RT_TUMBLE_IMPULSE = 0.0   # Steering impulse computed during SNIFF
+    _RT_SM_BEFORE = 0.0        # Smell strength at start of RUN (for improvement check)
+    _RT_DEAD_ZONE = 0.15       # rad (~8.6°) — don't tumble if already aimed
+    _RT_MIN_SM = 0.10          # Minimum smell strength to trigger steering
 
     # --- Issue #76d: Ball approach reward state ---
     # Biology: Dopamine burst on approach to salient stimulus (Schultz 1997).
@@ -1217,7 +1263,10 @@ def main():
             # tendency (chemotaxis). Ref: Catania 2006, Porter et al. 2007
             # GATE: only steer when actor has basic competence (prevents
             # destabilizing the CPG gait during early learning).
-            heading = float(world._data.qpos[3]) if len(world._data.qpos) > 3 else 0.0
+            # v0.4.8 fix: extract yaw from quaternion (qpos[3] is qw, NOT heading!)
+            _qw_olf, _qx_olf, _qy_olf, _qz_olf = world._data.qpos[3:7]
+            heading = float(np.arctan2(2.0 * (_qw_olf * _qz_olf + _qx_olf * _qy_olf),
+                                       1.0 - 2.0 * (_qy_olf**2 + _qz_olf**2)))
             _actor_comp = getattr(gate, 'actor_competence', 0.0)
             if _actor_comp > 0.1 or step > 5000:  # Steer once minimally stable, or after 5k
                 olf_steer = sensory_env.get_olfactory_steering(creature_pos, heading)
@@ -1627,8 +1676,24 @@ def main():
         # Debug: show obstacle distance for first few steps
         # (uncomment for debugging: print(f'  [DBG step {step}] obs_dist=...'))
 
-        # DA signal: ensure minimum DA even when fallen so learning continues
-        da_signal = np.clip(reward / 10.0, 0.05, 1.0)
+        # ================================================================
+        # BABY-KI: Compute learning signal from intrinsic reward blend
+        # ================================================================
+        # External reward (`reward`) is still computed above for FLOG and
+        # metrics. The LEARNING signal sent to the SNN is the blend:
+        #   blend=0.0 → pure intrinsic (Baby-KI default)
+        #   blend=1.0 → pure external (v0.4.3 RL behavior)
+        # get_intrinsic_reward() reads signals populated by creature.step()
+        # → process(), so we call it AFTER creature.step() below and
+        # apply R-STDP retroactively. For the DA neuromodulator and the
+        # reward_signal passed to process(), we use the blend of the
+        # PREVIOUS step's intrinsic reward (which is 0.0 on step 0 — safe).
+        _prev_intrinsic = creature.brain._intrinsic_reward if creature.brain else 0.0
+        _blend = args.reward_blend
+        learning_signal = _blend * reward + (1.0 - _blend) * _prev_intrinsic
+
+        # DA signal: derived from learning_signal, not raw external reward
+        da_signal = np.clip(learning_signal / 10.0, 0.05, 1.0)
         creature.snn.neuromod_levels['da'] = float(da_signal)
 
         reflex_cmd = reflexes.compute(sensor_data, is_fallen, sim_dt=args.timestep)
@@ -1644,7 +1709,10 @@ def main():
             ne_level = min(0.9, 0.3 + stress * 0.5)
             creature.snn.set_neuromodulator('ne', ne_level)
             creature.snn._hidden_tonic_current = 0.02 + stress * 0.08
-        else:
+        elif not is_fallen:
+            # v0.4.5: Trainer ALWAYS computes NE/tonic (no longer skipped
+            # when intrinsic_arousal_drive is True). The brain's arousal
+            # oscillator is read and ADDED on top. RAS modulates cortex.
             prev_brain = brain_result
             cur_reward_b = prev_brain.get('curiosity_reward', 0.0) if prev_brain else 0.0
             drv = prev_brain.get('drives', {}) if prev_brain else {}
@@ -1653,12 +1721,22 @@ def main():
             ne_base = 0.25
             ne_curiosity = cur_reward_b * 0.3
             ne_boredom = min(boredom, 1.0) * 0.2
-            ne_level = min(0.7, ne_base + ne_curiosity + ne_boredom)
-            creature.snn.set_neuromodulator('ne', ne_level)
+            ne_level = ne_base + ne_curiosity + ne_boredom
             tonic_base = 0.02
             tonic_explore = expl_drive * 0.04
             tonic_curiosity = cur_reward_b * 0.03
-            creature.snn._hidden_tonic_current = tonic_base + tonic_explore + tonic_curiosity
+            tonic = tonic_base + tonic_explore + tonic_curiosity
+
+            # v0.4.5: Additive arousal oscillator from brain
+            arousal_osc = 0.0
+            if (hasattr(creature, 'brain') and creature.brain
+                    and creature.brain.config.intrinsic_arousal_drive):
+                arousal_osc = getattr(creature.brain, '_arousal_oscillator', 0.0)
+                ne_level += arousal_osc * 0.15   # gentle NE boost from oscillator
+                tonic += arousal_osc * 0.03      # gentle tonic boost from oscillator
+
+            creature.snn.set_neuromodulator('ne', min(0.8, ne_level))
+            creature.snn._hidden_tonic_current = tonic
 
         if cb:
             cb.update(creature, sensor_data)
@@ -1824,6 +1902,73 @@ def main():
         # Add to existing steering (VOR etc.)
         _cpg_steering += _reflex_turn_steering
 
+        # v0.4.8: Run-and-Tumble chemotaxis (replaces v0.4.7 continuous steering)
+        # Biology: chemotaxis in animals is NOT continuous proportional steering.
+        # It is a discrete cycle: SNIFF → TUMBLE → RUN → SNIFF again.
+        # Continuous steering caused circling (v0.4.7 failure: dr consistently
+        # negative, CPG at 88-90%, actor never got control, sf:0).
+        #
+        # Run-and-Tumble (Berg & Brown 1972 for bacteria, analogous pattern
+        # in C. elegans, star-nosed moles — Catania 2013):
+        #   SNIFF: measure smell gradient, compute angle to source
+        #   TUMBLE: brief steering impulse to orient toward source (~12 steps)
+        #   RUN: straight-line locomotion, no steering (~80 steps)
+        #   Then repeat. If smell improved during RUN → extend next RUN.
+        #
+        # This prevents circling because steering is IMPULSE not CONTINUOUS.
+        # The dog sniffs, turns, runs straight, sniffs again.
+        _olf_steer_raw = sensor_data.get('olfactory_steering', 0.0)
+        _sm_now = sensor_data.get('smell_strength', 0.0)
+
+        # State machine tick
+        if _RT_TIMER > 0:
+            _RT_TIMER -= 1
+
+        if _RT_STATE == 'RUN':
+            # Running straight — no olfactory steering on CPG
+            if _RT_TIMER <= 0:
+                # RUN phase over → transition to SNIFF
+                _RT_STATE = 'SNIFF'
+                # (SNIFF is instantaneous — processed in same step)
+
+        if _RT_STATE == 'SNIFF':
+            # Measure gradient and decide whether to tumble
+            _sm_after_run = _sm_now
+            _angle_diff = abs(_olf_steer_raw)  # Already normalized [-1,1] by SensoryEnv
+
+            # Improvement check: did smell get stronger during last RUN?
+            if _sm_after_run > _RT_SM_BEFORE + 0.02:
+                # Getting closer — extend next RUN (reward straight walking)
+                _RT_RUN_DURATION = min(_RT_RUN_DURATION_MAX,
+                                       int(_RT_RUN_DURATION * 1.5))
+            else:
+                # Not improving — reset to base duration
+                _RT_RUN_DURATION = _RT_RUN_DURATION_BASE
+
+            # Decision: tumble or skip?
+            if _sm_now >= _RT_MIN_SM and _angle_diff > _RT_DEAD_ZONE:
+                # Need to turn: compute impulse and enter TUMBLE
+                # _olf_steer_raw is in [-1, 1], maps angle_diff/pi * sm
+                # Impulse gain 0.5 = half a radian for full error at full sm
+                _RT_TUMBLE_IMPULSE = _olf_steer_raw * 0.5
+                _RT_STATE = 'TUMBLE'
+                _RT_TIMER = _RT_TUMBLE_DURATION
+            else:
+                # Already aimed correctly or too weak signal → skip tumble, go to RUN
+                _RT_TUMBLE_IMPULSE = 0.0
+                _RT_STATE = 'RUN'
+                _RT_TIMER = _RT_RUN_DURATION
+                _RT_SM_BEFORE = _sm_now  # Record for next improvement check
+
+        if _RT_STATE == 'TUMBLE':
+            # Apply steering impulse to CPG (constant during tumble phase)
+            _cpg_steering += _RT_TUMBLE_IMPULSE
+            if _RT_TIMER <= 0:
+                # Tumble done → start RUN
+                _RT_STATE = 'RUN'
+                _RT_TIMER = _RT_RUN_DURATION
+                _RT_SM_BEFORE = _sm_now  # Record for improvement check
+
         # Wall pause: kill CPG completely during "perplex" phase
         # This must be AFTER all other _proximity_amp_scale calculations
         # so it can't be overridden by ball proximity or reflex logic.
@@ -1882,7 +2027,7 @@ def main():
                 creature._cpg_phase_input = spinal_cpg.get_phase_input()
 
         step_result = creature.step(
-            reward_signal=reward,
+            reward_signal=learning_signal,
             extra_sensor_data={
                 'smell_strength': sensor_data.get('smell_strength', 0.0),
                 'scent_reward': sensor_data.get('scent_reward', 0.0),
@@ -1910,6 +2055,14 @@ def main():
                 'vestibular_discomfort': min(1.0, max(0.0, (abs(_yaw_rate) - 0.3) * 2.0)) if abs(_yaw_rate) > 0.3 else 0.0,
             },
         )
+
+        # ================================================================
+        # BABY-KI: Compute intrinsic reward for NEXT step's learning signal.
+        # process() has just populated vestibular_discomfort, curiosity,
+        # empowerment, and proprioceptive_delta. Now compute the composite.
+        # ================================================================
+        if creature.brain:
+            creature.brain.get_intrinsic_reward()
 
         # --- Issue #78: Closed-Loop — record experience + adapt ---
         if _scene_has_ball and sensory_env:
@@ -2086,6 +2239,13 @@ def main():
                 flog_data['arousal'] = emo.get('arousal', 0.0)
                 flog_data['drive_dominant'] = drv_r.get('dominant', '')
                 flog_data['curiosity_reward'] = brain_result.get('curiosity_reward', 0.0)
+                # Baby-KI intrinsic reward components
+                flog_data['intrinsic_reward'] = brain_result.get('intrinsic_reward', 0.0)
+                flog_data['vestibular_discomfort'] = brain_result.get('vestibular_discomfort', 0.0)
+                flog_data['proprio_delta'] = brain_result.get('proprioceptive_delta', 0.0)
+                flog_data['body_anomaly_ema'] = brain_result.get('body_anomaly_ema', 0.0)
+                flog_data['learning_signal'] = learning_signal
+                flog_data['reward_blend'] = _blend
                 # Issue #75: Sensory environment
                 if sensory_env:
                     flog_data['smell_strength'] = sensor_data.get('smell_strength', 0.0)
@@ -2094,6 +2254,12 @@ def main():
                     flog_data['sound_direction'] = sensor_data.get('sound_direction', 0.0)
                     flog_data['scents_found'] = sensory_env.scents_found
                     flog_data['olfactory_steering'] = sensor_data.get('olfactory_steering', 0.0)
+                    # Run-and-Tumble state machine (v0.4.8)
+                    flog_data['rt_state'] = _RT_STATE
+                    flog_data['rt_timer'] = _RT_TIMER
+                    flog_data['rt_run_duration'] = _RT_RUN_DURATION
+                    flog_data['rt_tumble_impulse'] = _RT_TUMBLE_IMPULSE
+                    flog_data['rt_sm_before'] = _RT_SM_BEFORE
                     flog_data['ball_approach_reward'] = ball_approach_reward
                     flog_data['ball_dist'] = prev_ball_dist if prev_ball_dist is not None else -1.0
                     flog_data['ball_heading'] = getattr(creature, '_ball_heading', 0.0)
@@ -2240,7 +2406,7 @@ def main():
             if sensory_env:
                 sm = sensor_data.get('smell_strength', 0.0)
                 sf = sensory_env.scents_found
-                line3 += f'  sm:{sm:.2f}  sf:{sf}'
+                line3 += f'  sm:{sm:.2f}  sf:{sf}  RT:{_RT_STATE[0]}({_RT_TIMER})'
                 bh = getattr(creature, '_ball_heading', 0.0)
                 bs = getattr(creature, '_ball_salience', 0.0)
                 so = getattr(creature, '_steering_offset', 0.0)

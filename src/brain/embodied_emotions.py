@@ -42,8 +42,10 @@ class EmbodiedEmotions:
     """
 
     # Exponential Moving Average Decay
-    VALENCE_DECAY = 0.9
-    AROUSAL_DECAY = 0.85
+    # v0.7.0: Reduced from 0.9/0.85 — emotions should linger, not flash.
+    # A dog with a dead leg doesn't feel fine 20 steps later.
+    VALENCE_DECAY = 0.95
+    AROUSAL_DECAY = 0.92
 
     def __init__(self):
         self.state = EmotionalState()
@@ -52,7 +54,8 @@ class EmbodiedEmotions:
         self._step_count = 0
 
     def update(self, sensor_data: dict, prediction_error: float,
-               reward: float, is_fallen: bool) -> EmotionalState:
+               reward: float, is_fallen: bool,
+               extra_data: dict = None) -> EmotionalState:
         """
         Berechne emotionalen Zustand aus Körpersignalen.
         
@@ -61,10 +64,12 @@ class EmbodiedEmotions:
             prediction_error: World Model Prediction Error (0..1+)
             reward: Externer Reward (-1..1+)
             is_fallen: Ob die Kreatur gestürzt ist
+            extra_data: v0.7.0 enriched data (gait_quality, limb_dead, etc.)
             
         Returns:
             Aktueller EmotionalState
         """
+        _extra = extra_data or {}
         # === VALENCE (how am I doing?) ===
         valence_signals = []
         
@@ -83,6 +88,46 @@ class EmbodiedEmotions:
         if is_fallen:
             valence_signals.append(-0.5)
         
+        # v0.7.0: Gait Quality → Valence
+        # Good gait feels good, bad gait feels wrong (proprioceptive discomfort)
+        # GQ=0.34 (typical 3-leg) should push valence clearly negative
+        gait_q = _extra.get('gait_quality', 0.5)
+        valence_signals.append((gait_q - 0.5) * 0.8)  # GQ=0.3→-0.16, GQ=0.7→+0.16
+        
+        # v0.7.0: Dead limb → strong negative valence (body integrity violation)
+        # This is a PERSISTENT signal, not a one-time event.
+        # A dog with a paralyzed leg feels wrong CONTINUOUSLY.
+        limb_dead = _extra.get('limb_dead', [])
+        if limb_dead:
+            valence_signals.append(-0.5 * len(limb_dead))  # -0.5 per dead limb
+        
+        # v0.7.0: Obstacle proximity → anxiety (something is close, might hurt)
+        obs_dist = sensor_data.get('obstacle_distance', -1.0)
+        if obs_dist >= 0 and obs_dist < 0.3:
+            valence_signals.append(-0.2 * (0.3 - obs_dist) / 0.3)  # closer = worse
+        
+        # v0.7.0: Ball/target visible → positive valence (something interesting!)
+        ball_salience = _extra.get('ball_salience', 0.0)
+        if ball_salience > 0.1:
+            valence_signals.append(ball_salience * 0.15)  # seeing ball feels good
+        
+        # v0.7.0: Exploration progress → satisfaction
+        explored = _extra.get('spatial_explored', 0.0)
+        if explored > 0.05:
+            valence_signals.append(explored * 0.1)  # discovering new ground feels good
+        
+        # v0.7.0: Vestibular discomfort from sustained rotation
+        # Biology: semicircular canals detect angular acceleration.
+        # Sustained rotation (spinning) produces nausea/dizziness.
+        # This is NOT a motor correction (vestibulospinal reflex handles that)
+        # but an EMOTIONAL signal: "this feels wrong, stop spinning."
+        # The negative valence increases NE which increases motor noise
+        # which probabilistically breaks the circular pattern.
+        # Ref: Reason & Brand 1975 (Motion Sickness)
+        vestibular_discomfort = _extra.get('vestibular_discomfort', 0.0)
+        if vestibular_discomfort > 0:
+            valence_signals.append(-0.4 * vestibular_discomfort)  # spinning feels bad
+        
         # Joint at limit = pain (joint_angles near +/-1)
         joint_angles = sensor_data.get('joint_angles', [])
         if joint_angles:
@@ -90,6 +135,13 @@ class EmbodiedEmotions:
             valence_signals.append(-pain * 0.2)
         
         raw_valence = sum(valence_signals)
+        
+        # v0.7.0: Dead limb clamps valence ceiling
+        # A dog with a dead leg cannot feel "good" even if standing upright.
+        # The positive signals (upright, reward) are valid but insufficient
+        # to overcome body integrity loss.
+        if limb_dead:
+            raw_valence = min(raw_valence, -0.1 * len(limb_dead))
         
         # === AROUSAL (wie erregt bin ich?) ===
         arousal_signals = []
@@ -108,6 +160,32 @@ class EmbodiedEmotions:
         # Fallen state = initial high arousal, then resignation
         if is_fallen:
             arousal_signals.append(0.3)
+        
+        # v0.7.0: Dead limb → high arousal (alarm!)
+        if limb_dead:
+            arousal_signals.append(0.4)
+        
+        # v0.7.0: Bad gait → moderate arousal (something is wrong)
+        if gait_q < 0.4:
+            arousal_signals.append((0.4 - gait_q) * 0.5)  # up to +0.2
+        
+        # v0.7.0: Obstacle close → high arousal (danger alert!)
+        if obs_dist >= 0 and obs_dist < 0.3:
+            arousal_signals.append(0.3 * (0.3 - obs_dist) / 0.3)
+        
+        # v0.7.0: Smell detected → moderate arousal (something interesting nearby)
+        # NOTE: Freenove has no olfactory sensor. Kept for Go2/future hardware.
+        # smell_str = sensor_data.get('smell_strength', _extra.get('smell_strength', 0.0))
+        # if smell_str > 0.1:
+        #     arousal_signals.append(smell_str * 0.2)
+        
+        # v0.7.0: Ball visible and close → arousal (excitement!)
+        if ball_salience > 0.3:
+            arousal_signals.append(ball_salience * 0.15)
+        
+        # v0.7.0: Vestibular discomfort → arousal (dizziness = alarm)
+        if vestibular_discomfort > 0:
+            arousal_signals.append(vestibular_discomfort * 0.3)
         
         raw_arousal = sum(arousal_signals)
         

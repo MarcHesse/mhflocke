@@ -1,15 +1,24 @@
 """
-MH-FLOCKE — MuJoCo Creature v0.5.0
+MH-FLOCKE — MuJoCo Creature v0.5.2
 ========================================
 SNN-MuJoCo bridge: population coding, sense-think-act cycle.
 
-v0.5.0: Per-population Izhikevich parameters (Issue #104).
+v0.5.2: Bilateral MH->Output symmetry fix (Issue #145).
+  - Random MH->Output init creates L/R asymmetry that R-STDP amplifies
+    into drift (positive feedback). Fix: average weights between bilateral
+    leg pairs (FL<->FR, RL<->RR) at init time.
+  - Drift analysis (2026-04-20): CPG-only walks straight (7m/50k),
+    all SNN seeds drifted rightward. After fix: dr ≈ 0.
+v0.5.1: Continuous topology scaling (Issue #142).
+  - Removed n_hidden >= 500 cliff that jumped from ~560 to 4308 neurons.
+  - Same scaling formula applies for all n_hidden values.
+  - Motor Hidden (30% of budget) always present.
+  v0.5.0: Per-population Izhikevich parameters (Issue #104).
   v0.4.3: Ultrasonic sensor, additive CPG blending.
   v0.4.2: Scalable cerebellar architecture for hardware transfer.
   - profile.json drives SNN topology (n_input, n_hidden, n_output)
-  - Cerebellar populations scale proportionally for small neuron counts
+  - Cerebellar populations scale proportionally
   - Hardware-matched sensor encoding (--hardware-sensors flag)
-  - Freenove 232 neurons runs full 15-step cognitive loop
 """
 
 import torch
@@ -795,11 +804,14 @@ class MuJoCoCreatureBuilder:
         """
         Compute cerebellar population sizes scaled to available hidden neurons.
         
-        For large networks (n_hidden >= 500): use standard sizes (GrC=4000, GoC=200).
-        For small networks (n_hidden < 500): scale proportionally.
+        v0.7.1: Continuous scaling for ALL n_hidden values. No more cliff
+        at n_hidden=500 that jumped from ~560 to 4308 total neurons.
+        The same formula applies whether n_hidden is 172 or 5000.
         
-        The architecture is preserved — just smaller. Like a mouse cerebellum
-        vs an elephant cerebellum: same cell types, same connectivity, different scale.
+        Layout of hidden neurons:
+          - PkC + DCN: fixed at 2*n_actuators each (output interface)
+          - Remaining: 70% cerebellum (GrC + GoC), 30% motorcortex (MH)
+          - GrC:GoC ratio within cerebellum: 85:15
         
         Returns:
             dict with population sizes: n_granule, n_golgi, n_purkinje, n_dcn
@@ -807,25 +819,17 @@ class MuJoCoCreatureBuilder:
         n_purkinje = n_actuators * 2  # 2 per actuator (push/pull)
         n_dcn = n_actuators * 2       # same as PkC
         
-        if n_hidden >= 500:
-            # Standard: large cerebellum (Go2, Bommel)
-            return {
-                'n_granule': 4000,
-                'n_golgi': 200,
-                'n_purkinje': n_purkinje,
-                'n_dcn': n_dcn,
-            }
-        
-        # Scaled: small cerebellum (Freenove, micro robots)
-        # Reserve space for PkC + DCN first, rest goes to GrC + GoC
+        # Reserve space for PkC + DCN first (fixed output interface)
         fixed_neurons = n_purkinje + n_dcn  # e.g. 24 + 24 = 48 for 12 actuators
         available = max(4, n_hidden - fixed_neurons)
         
-        # Split available: 80% GrC (expansion), 20% GoC (inhibition)
-        # Biology: GrC:GoC ratio is ~400:1 in real cerebellum,
-        # but GoC needs minimum viable count for inhibitory feedback.
-        n_golgi = max(4, int(available * 0.15))
-        n_granule = max(4, available - n_golgi)
+        # Reserve 30% as free hidden layer (motorcortex / motor_hidden)
+        free_hidden_ratio = 0.30
+        cerebellum_budget = max(4, int(available * (1.0 - free_hidden_ratio)))
+        
+        # Split cerebellum budget: 85% GrC (expansion), 15% GoC (inhibition)
+        n_golgi = max(4, int(cerebellum_budget * 0.15))
+        n_granule = max(4, cerebellum_budget - n_golgi)
         
         return {
             'n_granule': n_granule,
@@ -908,8 +912,8 @@ class MuJoCoCreatureBuilder:
             # Hardware mode: n_input from profile (e.g. 48 for Freenove)
             n_input = profile_n_input
             n_sensor_channels = n_input  # 1:1, no population coding expansion
-        elif profile_n_input is not None and n_hidden_neurons < 500:
-            # Small robot with profile: trust profile n_input
+        elif profile_n_input is not None:
+            # Profile-driven: trust the profile's n_input
             n_input = profile_n_input
             n_sensor_channels = n_input
         else:
@@ -932,23 +936,31 @@ class MuJoCoCreatureBuilder:
         n_purkinje = cb_pops['n_purkinje']
         n_dcn = cb_pops['n_dcn']
 
-        # Total neuron count
-        total_neurons = n_input + n_output + n_granule + n_golgi + n_purkinje + n_dcn
+        # v0.7.0: Motor hidden neurons (motorcortex)
+        # These are FREE hidden neurons for R-STDP motor pattern learning.
+        # They are NOT part of the cerebellum and NOT protected from R-STDP.
+        # Biology: primary motor cortex learns voluntary movement patterns,
+        # cerebellum provides error correction on top.
+        n_cerebellum = n_granule + n_golgi + n_purkinje + n_dcn
+        n_motor_hidden = max(0, n_hidden_neurons - n_cerebellum)
+
+        # Total neuron count (now includes motor_hidden)
+        total_neurons = n_input + n_output + n_granule + n_golgi + n_purkinje + n_dcn + n_motor_hidden
 
         # Neuron ID ranges
         grc_start = n_input + n_output
         goc_start = grc_start + n_granule
         pkc_start = goc_start + n_golgi
         dcn_start = pkc_start + n_purkinje
+        motor_hidden_start = dcn_start + n_dcn
 
         print(f'  SNN Topology: {total_neurons} neurons '
               f'({n_input}i + {n_output}o + {n_granule}GrC + {n_golgi}GoC + '
-              f'{n_purkinje}PkC + {n_dcn}DCN)')
+              f'{n_purkinje}PkC + {n_dcn}DCN + {n_motor_hidden}MH)')
         if hardware_sensors:
             print(f'  Sensor mode: HARDWARE-MATCHED (Bridge v2.5 layout, {n_input} channels)')
-        if n_hidden_neurons < 500:
-            print(f'  Scaled cerebellum: {n_hidden_neurons} hidden neurons '
-                  f'(GrC:{n_granule} GoC:{n_golgi} PkC:{n_purkinje} DCN:{n_dcn})')
+        print(f'  Topology: {n_hidden_neurons} hidden '
+              f'(GrC:{n_granule} GoC:{n_golgi} PkC:{n_purkinje} DCN:{n_dcn} MH:{n_motor_hidden})')
 
         # Update CerebellarConfig with scaled values
         from src.brain.cerebellar_learning import CerebellarConfig
@@ -957,13 +969,14 @@ class MuJoCoCreatureBuilder:
         cb_cfg.n_golgi = n_golgi
         cb_cfg.n_purkinje = n_purkinje
         cb_cfg.n_dcn = n_dcn
-        # Scale connectivity for small networks
-        if n_hidden_neurons < 500:
-            # With fewer GrC, increase connectivity to maintain information flow
-            cb_cfg.grc_goc_prob = min(0.3, 0.05 * (4000 / max(n_granule, 1)))
-            cb_cfg.pf_pkc_prob = min(0.8, 0.4 * (4000 / max(n_granule, 1)))
-            # Fewer MF per GrC for very small networks
-            cb_cfg.mf_per_granule = min(4, max(2, n_input // max(n_granule, 1)))
+        # Scale connectivity proportionally to GrC count.
+        # For large GrC counts the formulas converge to standard values
+        # (e.g. 4000 GrC → grc_goc_prob=0.05, same as old hardcoded).
+        # For small GrC counts they increase connectivity to maintain
+        # information flow through the cerebellar circuit.
+        cb_cfg.grc_goc_prob = min(0.3, 0.05 * (4000 / max(n_granule, 1)))
+        cb_cfg.pf_pkc_prob = min(0.8, 0.4 * (4000 / max(n_granule, 1)))
+        cb_cfg.mf_per_granule = min(4, max(2, n_input // max(n_granule, 1)))
 
         # 4. SNN Controller
         snn = SNNController(SNNConfig(
@@ -983,7 +996,6 @@ class MuJoCoCreatureBuilder:
 
         grc_ids = torch.arange(grc_start, grc_start + n_granule)
         snn.define_population('granule_cells', grc_ids)
-        snn.define_population('hidden', grc_ids)
 
         goc_ids = torch.arange(goc_start, goc_start + n_golgi)
         snn.define_population('golgi_cells', goc_ids)
@@ -993,6 +1005,20 @@ class MuJoCoCreatureBuilder:
 
         dcn_ids = torch.arange(dcn_start, dcn_start + n_dcn)
         snn.define_population('dcn', dcn_ids)
+
+        # v0.7.0: Motor hidden population (motorcortex)
+        # These neurons learn motor patterns via R-STDP.
+        # Biology: primary motor cortex — pattern generation.
+        # NOT protected from R-STDP (unlike cerebellum).
+        if n_motor_hidden > 0:
+            mh_ids = torch.arange(motor_hidden_start, motor_hidden_start + n_motor_hidden)
+            snn.define_population('motor_hidden', mh_ids)
+            # Include in 'hidden' for tonic current
+            all_hidden_ids = torch.cat([grc_ids, mh_ids])
+            snn.define_population('hidden', all_hidden_ids)
+        else:
+            mh_ids = torch.tensor([], dtype=torch.long)
+            snn.define_population('hidden', grc_ids)
 
         # === Connectivity — Biologically structured ===
         # MF -> GrC: each GrC receives mf_per_granule MF inputs
@@ -1031,11 +1057,59 @@ class MuJoCoCreatureBuilder:
         snn.connect_populations('granule_cells', 'output',
                                 prob=0.02, weight_range=(0.3, 0.8))
 
+        # v0.7.0: Motor hidden connectivity (motorcortex)
+        # Input -> motor_hidden: sparse sensory feed
+        # motor_hidden -> Output: motor pattern projection
+        # These connections are the ones R-STDP can modify!
+        if n_motor_hidden > 0:
+            # MF -> motor_hidden (sensory input)
+            snn.connect_populations('mossy_fibers', 'motor_hidden',
+                                    prob=0.1, weight_range=(0.5, 1.5))
+            # motor_hidden -> output (motor drive)
+            snn.connect_populations('motor_hidden', 'output',
+                                    prob=0.15, weight_range=(0.3, 1.0))
+
+            # v0.5.2: Bilateral symmetry for MH->Output weights (Issue #145)
+            # Biology: bilateral animals have symmetric motor innervation at birth.
+            # Without this, random MH->Output init creates L/R asymmetry that
+            # R-STDP amplifies into drift (positive feedback loop).
+            # Drift analysis (2026-04-20): CPG-only walks straight (7m/50k),
+            # SNN runs drift consistently. All seeds show same rightward pattern.
+            # Fix: average MH->Output weights between bilateral leg pairs.
+            # Actuator layout: FL(0-2), FR(3-5), RL(6-8), RR(9-11)
+            # Pairs: FL<->FR (joints 0<->3, 1<->4, 2<->5)
+            #        RL<->RR (joints 6<->9, 7<->10, 8<->11)
+            _bilateral_pairs = [(0, 3), (1, 4), (2, 5),   # FL <-> FR
+                                (6, 9), (7, 10), (8, 11)]  # RL <-> RR
+            _out_start = out_ids[0].item()
+            _n_per_joint = max(1, n_output // world.n_actuators)
+            _idx = snn._weight_indices
+            _w = snn._weight_values
+            for _left_j, _right_j in _bilateral_pairs:
+                _left_neurons = list(range(_out_start + _left_j * _n_per_joint,
+                                           _out_start + (_left_j + 1) * _n_per_joint))
+                _right_neurons = list(range(_out_start + _right_j * _n_per_joint,
+                                            _out_start + (_right_j + 1) * _n_per_joint))
+                for _ln, _rn in zip(_left_neurons, _right_neurons):
+                    _left_mask = (_idx[1] == _ln)
+                    _right_mask = (_idx[1] == _rn)
+                    if _left_mask.any() and _right_mask.any():
+                        _avg = (_w[_left_mask].mean() + _w[_right_mask].mean()) / 2.0
+                        _w[_left_mask] = _avg
+                        _w[_right_mask] = _avg
+            print(f'  MH->Output bilateral symmetry enforced ({len(_bilateral_pairs)} joint pairs)')
+
+            # motor_hidden recurrent (pattern memory)
+            snn.connect_populations('motor_hidden', 'motor_hidden',
+                                    prob=0.1, weight_range=(0.2, 0.6))
+
         # === Per-population membrane time constants ===
         snn._tau_base[grc_ids] = 5.0
         snn._tau_base[goc_ids] = 20.0
         snn._tau_base[pkc_ids] = 15.0
         snn._tau_base[dcn_ids] = 10.0
+        if n_motor_hidden > 0:
+            snn._tau_base[mh_ids] = 10.0  # Medium time constant (cortical)
 
         # === Thresholds ===
         snn._thresholds[grc_ids] = 0.5
@@ -1043,6 +1117,8 @@ class MuJoCoCreatureBuilder:
         snn._thresholds[pkc_ids] = 1.0
         snn._thresholds[dcn_ids] = 1.0
         snn._thresholds[out_ids] = 0.4
+        if n_motor_hidden > 0:
+            snn._thresholds[mh_ids] = 0.5  # Same as GrC
         snn._hidden_tonic_current = 0.015
 
         # === Per-population Izhikevich parameters (Issue #104) ===
@@ -1053,7 +1129,18 @@ class MuJoCoCreatureBuilder:
             snn.set_izhikevich_params('golgi_cells',   a=0.02, b=0.2, c=-55, d=4)   # IB
             snn.set_izhikevich_params('purkinje_cells', a=0.02, b=0.2, c=-50, d=2)  # CH
             snn.set_izhikevich_params('dcn',           a=0.03, b=0.25, c=-52, d=0)  # Rebound
-        # Output neurons: always LIF-LTC (motoneurons are RS/Tonic, not FS)
+            # Motor hidden: Regular Spiking (like cortical pyramidal cells)
+            if n_motor_hidden > 0:
+                snn.set_izhikevich_params('motor_hidden', a=0.02, b=0.2, c=-65, d=8)  # RS
+            # Output neurons: Regular Spiking (motoneurons are tonic/RS).
+            # v0.5.1: Enabling Izhikevich on ALL populations allows the
+            # unified fast path in step() (no boolean masking overhead).
+            # Biology: alpha motoneurons fire tonically — RS is appropriate.
+            snn.set_izhikevich_params('output', a=0.02, b=0.2, c=-65, d=8)  # RS
+            # Input neurons: RS. These only receive external current and spike
+            # when driven. The dynamics don't matter much for input — but having
+            # them on Izhikevich enables the all_izh fast path in step().
+            snn.set_izhikevich_params('input', a=0.02, b=0.2, c=-65, d=8)  # RS
 
         # Protect cerebellar populations from R-STDP
         # Can be disabled with protect_cerebellum=False for v0.4.3 compatibility

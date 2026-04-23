@@ -8,6 +8,7 @@ import torch
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
+from collections import deque
 from src.brain.snn_controller import SNNController
 
 
@@ -222,7 +223,7 @@ class ExperienceBuffer:
 
     def __init__(self, max_size: int = 5000):
         self.max_size = max_size
-        self._buffer: List[Dict] = []
+        self._buffer = deque(maxlen=max_size)
 
     def record(self, pattern: torch.Tensor, context: Dict,
                valence: float):
@@ -232,8 +233,6 @@ class ExperienceBuffer:
             'context': context,
             'valence': valence,
         })
-        if len(self._buffer) > self.max_size:
-            self._buffer.pop(0)
 
     def get_frequent_patterns(self, min_count: int = 3,
                                similarity_threshold: float = 0.7) -> List[Dict]:
@@ -334,21 +333,19 @@ class Synaptogenesis:
         self.buffer = ExperienceBuffer()
 
         # Spike window for pattern extraction
-        self._spike_window: List[torch.Tensor] = []
+        self._spike_window = deque(maxlen=self.config.pattern_window * 2)
 
     def record_experience(self, context: Dict, valence: float):
         """Zeichnet aktuelle SNN-Aktivität als Erfahrung auf."""
         # Spike-Fenster → Pattern
         if len(self._spike_window) >= 3:
-            window = torch.stack(self._spike_window[-self.config.pattern_window:])
+            window = torch.stack(list(self._spike_window)[-self.config.pattern_window:])
             pattern = self.extractor.extract(window)
             self.buffer.record(pattern, context, valence)
 
     def observe_spikes(self, spikes: torch.Tensor):
         """Fügt Spikes zum Beobachtungsfenster hinzu."""
         self._spike_window.append(spikes.detach().cpu())
-        if len(self._spike_window) > self.config.pattern_window * 2:
-            self._spike_window = self._spike_window[-self.config.pattern_window:]
 
     def consolidate(self) -> Dict:
         """Konsolidierung: Erfahrungen → Konzepte."""
@@ -403,7 +400,7 @@ class Synaptogenesis:
             return apical
 
         # Aktuelles Pattern
-        window = torch.stack(self._spike_window[-min(20, len(self._spike_window)):])
+        window = torch.stack(list(self._spike_window)[-min(20, len(self._spike_window)):])
         current_pattern = self.extractor.extract(window)
 
         # Ähnliche Konzepte finden

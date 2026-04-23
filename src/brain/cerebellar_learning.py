@@ -156,6 +156,41 @@ class InferiorOlive:
         self._steering_gain_correction = 0.0  # DCN output: VOR gain modifier
         self._obstacle_cf = 0.0  # obstacle proximity CF (Issue #103)
 
+        # --- Vestibular Gain Adaptation (Issue C.1: Drift Learning) ---
+        # Biology: The flocculus of the cerebellum calibrates the gain of
+        # the vestibulo-ocular reflex (VOR) AND the vestibulo-spinal reflex
+        # (VSR). When the animal walks in a circle despite the spinal
+        # reflex firing, the cerebellum detects this as a persistent
+        # drift-error and learns to INCREASE the reflex gain to compensate.
+        # If the animal over-corrects (oscillates around the heading line),
+        # the gain is DECREASED. This is lifelong learning — the gain
+        # changes as the body changes (growth, injury, leg loss).
+        #
+        # The CORRECT teaching signal is NOT the per-cycle drift variance
+        # (which is dominated by gait-synchronous noise not fully removed
+        # by the cycle integrator). It is the CUMULATIVE heading error
+        # over many cycles — is the animal actually going straight?
+        #
+        # We maintain a sliding window of drift estimates and compute the
+        # TOTAL rotation they imply over that window. If total |rotation|
+        # is large, the reflex is too weak — strengthen it. If total
+        # rotation is near zero AND std is low, walk is healthy — no change.
+        # If total rotation is near zero but std is very high, the reflex
+        # IS working (just noisily) — no change either.
+        #
+        # This rule is immune to the "oscillating drift from gait noise"
+        # false positive that broke the v0.3.2a formulation.
+        #
+        # Ref: Ito 1984 — Cerebellar control of the vestibular reflexes
+        # Ref: Lisberger 1988 — Neural basis of motor learning in VOR
+        self._drift_history = np.zeros(20, dtype=np.float64)  # last 20 gait cycles
+        self._drift_history_idx = 0
+        self._drift_history_full = False
+        self._prev_drift_estimate = 0.0
+        self._vestibular_gain_correction = 1.0  # multiplicative, 1.0 = unchanged
+        self._vestibular_gain_lr = 0.02  # per-cycle learning rate
+        self._vestibular_cf = 0.0  # for logging
+
     def compute_cf_signal(self, sensor_data: dict) -> np.ndarray:
         """
         Compute climbing fiber activation for each Purkinje cell.
@@ -506,6 +541,114 @@ class InferiorOlive:
             'heading_gain': self._heading_gain,
             'obstacle_cf': self._obstacle_cf,
         }
+
+    def update_vestibular_gain(self, drift_estimate: float, cycles_completed: int):
+        """Cerebellar adaptation of the vestibulospinal reflex gain.
+
+        Learns BOTH the magnitude AND the sign of the gain correction.
+        This matches the biological flocculus, which calibrates VOR/VSR by
+        adjusting both how strong AND in which direction the reflex acts.
+
+        The key insight: we cannot assume the hardwired reflex circuitry
+        points in the "right" direction for any particular body. In a
+        young animal (or new robot body), the sign of the motor response
+        might fight the drift instead of opposing it. Real cerebella
+        handle this by having signed PkC weights that can flip the reflex
+        phase if needed (Miles & Lisberger 1981 on VOR phase inversion).
+
+        Algorithm (per gait cycle):
+            1. Measure mean drift over last 10+ cycles (cumulative error).
+            2. Probe whether recent gain changes helped or hurt:
+               - If |mean_drift| got worse after we raised gain → wrong sign.
+               - If |mean_drift| got better after we raised gain → right sign.
+            3. Adjust gain in the direction that reduces drift.
+
+        Args:
+            drift_estimate: Mean yaw_rate over the last gait cycle (rad/s).
+            cycles_completed: Total completed cycles from Mogli.
+        """
+        if cycles_completed <= 0:
+            return
+
+        # Only update on a new cycle (Mogli calls every step)
+        if drift_estimate == self._prev_drift_estimate:
+            return
+        self._prev_drift_estimate = drift_estimate
+
+        # Slot into ring buffer
+        self._drift_history[self._drift_history_idx] = drift_estimate
+        self._drift_history_idx = (self._drift_history_idx + 1) % len(self._drift_history)
+        if self._drift_history_idx == 0:
+            self._drift_history_full = True
+
+        n_valid = len(self._drift_history) if self._drift_history_full else self._drift_history_idx
+        if n_valid < 10:
+            return
+
+        hist = self._drift_history if self._drift_history_full else self._drift_history[:n_valid]
+
+        # Current error: mean |drift| over the window
+        current_abs_drift = float(np.mean(np.abs(hist)))
+        signed_mean_drift = float(np.mean(hist))
+
+        # Track the previous error for gradient probe
+        if not hasattr(self, '_prev_abs_drift'):
+            self._prev_abs_drift = current_abs_drift
+            self._prev_gain_direction = +1.0  # initial probe direction
+            self._probe_step_counter = 0
+
+        DEAD_BAND = 0.05  # rad/s averaged
+
+        if current_abs_drift < DEAD_BAND:
+            # Walking straight enough — gentle pull toward neutral.
+            # We decay magnitude, not sign (sign of successful gain stays).
+            decay = 0.002 * self._vestibular_gain_correction
+            self._vestibular_gain_correction -= decay * np.sign(self._vestibular_gain_correction)
+            self._vestibular_cf = 0.0
+            self._prev_abs_drift = current_abs_drift
+            return
+
+        # === SIGN-PROBING GRADIENT DESCENT ===
+        # We tweaked gain by _prev_gain_direction on the last update.
+        # Did the drift get better or worse?
+        drift_change = current_abs_drift - self._prev_abs_drift
+
+        if drift_change > 0.02:
+            # Drift got WORSE after our last change → we went the wrong way.
+            # Flip probe direction and take a step that way.
+            self._prev_gain_direction *= -1.0
+            self._vestibular_cf = -1.0  # log: we flipped
+        elif drift_change < -0.02:
+            # Drift got BETTER → keep going in same direction.
+            self._vestibular_cf = +1.0  # log: we continued
+        else:
+            # Drift unchanged — our step was too small to matter.
+            # Keep direction, but log neutrality.
+            self._vestibular_cf = 0.0
+
+        # Step size scales with current error magnitude
+        step_size = self._vestibular_gain_lr * min(1.0, current_abs_drift / 0.3)
+        self._vestibular_gain_correction += self._prev_gain_direction * step_size
+
+        # Signed bounds: can invert the reflex entirely if the hardwired
+        # direction was wrong. Range [−3, +3] gives plenty of headroom.
+        self._vestibular_gain_correction = float(
+            np.clip(self._vestibular_gain_correction, -3.0, 3.0)
+        )
+
+        self._prev_abs_drift = current_abs_drift
+
+    def get_vestibular_gain_correction(self) -> float:
+        """Current multiplicative modifier on the vestibulospinal reflex gain.
+
+        Returned to Mogli every step; Mogli applies it as:
+            effective_gain = config.vestibular_gain * correction
+
+        Starts at 1.0 (neutral). Grows when drift persists, shrinks when the
+        system oscillates. This is the cerebellum's learned calibration of
+        the hardwired brainstem reflex.
+        """
+        return self._vestibular_gain_correction
 
     def get_steering_gain_correction(self) -> float:
         """Get cerebellar VOR gain modifier.

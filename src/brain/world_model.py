@@ -8,6 +8,7 @@ import torch
 import numpy as np
 from typing import Dict, Optional, List, Tuple
 from dataclasses import dataclass
+from collections import deque
 from src.brain.snn_controller import SNNController, SNNConfig
 
 
@@ -142,8 +143,7 @@ class DreamEngine:
                  creature_snn: SNNController):
         self.world_model = world_model
         self.creature_snn = creature_snn
-        self._buffer: List[Tuple[torch.Tensor, torch.Tensor, float]] = []
-        self._max_buffer = 10000
+        self._buffer = deque(maxlen=10000)
 
     def record_experience(self, sensor: torch.Tensor,
                            action: torch.Tensor,
@@ -154,8 +154,6 @@ class DreamEngine:
             action.detach().cpu().clone(),
             reward,
         ))
-        if len(self._buffer) > self._max_buffer:
-            self._buffer.pop(0)
 
     def dream(self, n_steps: int = 100,
               replay_ratio: float = 0.7) -> Dict:
@@ -227,4 +225,4 @@ class DreamEngine:
 
     def clear_buffer(self):
         """Löscht Replay-Buffer."""
-        self._buffer = []
+        self._buffer = deque(maxlen=10000)

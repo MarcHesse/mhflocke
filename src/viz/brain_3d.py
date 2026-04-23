@@ -32,16 +32,17 @@ SYNAPSE_BASE = (30, 60, 120)
 SYNAPSE_ACTIVE = (0, 200, 220)
 OUTPUT_GOLD = (255, 200, 60)
 
-# Cerebellar architecture — 6 populations
+# Cerebellar + motorcortex architecture — 7 populations
 LAYER_COLORS = {
     0: CYAN_ACCENT,     # Mossy Fibers (input)
     1: COOL_BLUE,       # Granule Cells (expansion, sparse)
     2: (200, 80, 80),   # Golgi Cells (inhibitory, red-ish)
     3: VIOLET_PULSE,    # Purkinje Cells (learning output)
     4: FIRE_ORANGE,     # DCN (motor correction)
-    5: OUTPUT_GOLD,     # Output neurons
+    5: (80, 220, 120),  # Motor Hidden (motorcortex, R-STDP active)
+    6: OUTPUT_GOLD,     # Output neurons
 }
-LAYER_LABELS = ['MF', 'GrC', 'GoC', 'PkC', 'DCN', 'OUT']
+LAYER_LABELS = ['MF', 'GrC', 'GoC', 'PkC', 'DCN', 'MH', 'OUT']
 DENDRITE_COLOR = (120, 60, 180)
 
 
@@ -91,8 +92,9 @@ class BrainNetworkState:
             n_goc = ps.get('n_golgi', 18)
             n_pkc = ps.get('n_purkinje', 24)
             n_dcn = ps.get('n_dcn', 24)
+            n_mh = ps.get('n_motor_hidden', 0)
             n_out = ps.get('n_output', 12)
-            total_real = n_mf + n_grc + n_goc + n_pkc + n_dcn + n_out
+            total_real = n_mf + n_grc + n_goc + n_pkc + n_dcn + n_mh + n_out
 
             # Scale to n_display if needed (for large networks like Go2 4624 neurons)
             if total_real > n:
@@ -102,20 +104,22 @@ class BrainNetworkState:
                 n_goc = max(2, int(n_goc * scale))
                 n_pkc = max(2, int(n_pkc * scale))
                 n_dcn = max(2, int(n_dcn * scale))
-                n_out = max(2, n - n_mf - n_grc - n_goc - n_pkc - n_dcn)
+                n_mh = max(0, int(n_mh * scale))
+                n_out = max(2, n - n_mf - n_grc - n_goc - n_pkc - n_dcn - n_mh)
             elif total_real < n:
                 # Pad output if n_display > total_real
                 n_out = n_out + (n - total_real)
         else:
             # Legacy fallback: estimate from n_display
             n_mf = max(8, int(n * 0.10))
-            n_grc = max(20, int(n * 0.45))
-            n_goc = max(6, int(n * 0.10))
+            n_grc = max(20, int(n * 0.40))
+            n_goc = max(6, int(n * 0.08))
             n_pkc = max(4, int(n * 0.05))
             n_dcn = max(4, int(n * 0.05))
-            n_out = max(4, n - n_mf - n_grc - n_goc - n_pkc - n_dcn)
+            n_mh = max(0, int(n * 0.15))
+            n_out = max(4, n - n_mf - n_grc - n_goc - n_pkc - n_dcn - n_mh)
 
-        self.layer_sizes = [n_mf, n_grc, n_goc, n_pkc, n_dcn, n_out]
+        self.layer_sizes = [n_mf, n_grc, n_goc, n_pkc, n_dcn, n_mh, n_out]
 
         # Layer index per neuron
         self.layer_idx = np.zeros(n, dtype=np.int32)
@@ -128,9 +132,9 @@ class BrainNetworkState:
         rng = np.random.RandomState(42)
         pts = np.zeros((n, 3), dtype=np.float32)
 
-        layer_x = [-2.0, -0.7, -0.7, 0.7, 1.4, 2.0]
-        layer_y_offset = [0.0, 0.0, 0.8, 0.0, 0.0, 0.0]
-        layer_radius = [0.5, 1.2, 0.4, 0.3, 0.3, 0.5]
+        layer_x = [-2.0, -0.7, -0.7, 0.7, 1.4, 1.8, 2.5]
+        layer_y_offset = [0.0, 0.0, 0.8, 0.0, 0.0, -0.5, 0.0]
+        layer_radius = [0.5, 1.2, 0.4, 0.3, 0.3, 0.5, 0.5]
 
         off = 0
         for li, sz in enumerate(self.layer_sizes):
@@ -154,7 +158,8 @@ class BrainNetworkState:
         off_goc = off_grc + n_grc
         off_pkc = off_goc + n_goc
         off_dcn = off_pkc + n_pkc
-        off_out = off_dcn + n_dcn
+        off_mh = off_dcn + n_dcn
+        off_out = off_mh + n_mh
 
         # MF → GrC (4 inputs per GrC, matching biology)
         for gi in range(off_grc, off_grc + n_grc):
@@ -193,6 +198,19 @@ class BrainNetworkState:
             targets = rng.choice(range(off_out, off_out + n_out), size=min(nc, n_out), replace=False)
             for ti in targets:
                 pairs.append((di, ti))
+
+        # MH → OUT (motorcortex to motoneurons)
+        if n_mh > 0:
+            for mi in range(off_mh, off_mh + n_mh):
+                if rng.rand() < 0.3:
+                    ti = rng.randint(off_out, off_out + n_out)
+                    pairs.append((mi, ti))
+            # MF → MH (sensory input to motorcortex)
+            for mi in range(off_mh, off_mh + n_mh):
+                nc = min(3, n_mf)
+                targets = rng.choice(range(off_mf, off_mf + n_mf), size=nc, replace=False)
+                for ti in targets:
+                    pairs.append((ti, mi))
 
         self.synapse_pairs = pairs
         self._ready = True

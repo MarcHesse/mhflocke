@@ -1,5 +1,69 @@
 # Changelog
 
+## v0.7.0 (2026-04-23)
+
+### Baby-KI: Intrinsic Reward Learning
+- New `train_baby.py` training script with `--reward-blend` flag.
+  0.0 = pure intrinsic reward (no external signal), 1.0 = v0.4.3 behavior.
+- Intrinsic reward from body signals: vestibular discomfort, proprioceptive
+  delta, curiosity, empowerment. The dog learns because falling feels bad
+  and moving feels good — no reward shaping.
+- Arousal Drive (RAS) tested and disabled: constant, oscillator, and additive
+  variants all hurt locomotion (0.30-1.57m vs 3.37m baseline).
+
+### Run-and-Tumble Chemotaxis (v0.4.8) — NEW
+- Biologically correct navigation replaces continuous olfactory steering.
+  Three-state machine: SNIFF (1 step), TUMBLE (12 steps), RUN (40 steps).
+- Adaptive RUN duration: extends 1.5x when scent improves, max 120 steps.
+- Result: **5.43m, 0 falls, 4 scent targets found** (vs 3.37m baseline,
+  vs 0.51m with continuous steering which caused circling).
+- Biology: Berg & Brown 1972, Catania 2013.
+- Heading bug fixed: qpos[3] is quaternion W (~1.0), not yaw angle.
+  All olfactory navigation failures since v0.4.6 traced to this.
+
+### Sensory Environment v0.4.8
+- Heading-aware scent respawn: sources spawn in ±30° cone ahead of creature.
+- Scent radius 0.5→0.8m (sized for Freenove's short stride).
+- Fade distance 5.0→3.0m (faster recycling of passed sources).
+
+### v0.7.0 Pillars — Autonomous Self-Learning
+- **Body Awareness** (`body_awareness.py`): Proprioceptive limb failure
+  detection via command-position correlation. Auto-disconnects dead CPG
+  oscillators. Thresholds: dead < 0.20, degraded < 0.35.
+- **Spatial Map** (`spatial_map.py`): 2D cognitive map from IMU path
+  integration. 20×20 grid, landmark memory, direction-to-home.
+- **Gait Quality** (`gait_quality.py`): Periodicity (autocorrelation),
+  jitter, height ratio, step amplitude. Feeds into training reward.
+- **Directed Learning** (`directed_learning.py`): Systematic self-
+  experimentation. Generates hypotheses, tests them, evaluates results.
+  Autonomously confirmed frequency hypothesis (GQ 0.39→0.57).
+- **Emotion Loop Connected**: Emotions receive gait quality, body awareness,
+  obstacle distance, ball salience. Dead limb → fear, bad gait → negative
+  valence, ball → joy.
+
+### SNN Optimization for Pi4
+- n_hidden=500 (was 172): continuous topology scaling, no cliff.
+- Pi4 benchmark: 77 Hz in Bridge mode (12.9ms/step). 55 Hz full cognitive.
+- Motor Hidden population (30% of hidden budget) with R-STDP.
+- Izhikevich RS on all populations including input + output.
+
+### Bilateral Symmetry Fix (v0.5.2)
+- Random MH→Output init creates L/R asymmetry that R-STDP amplifies
+  into systematic drift. Fix: average weights between bilateral leg pairs.
+- DreamEngine buffer list→deque (O(N)→O(1) eviction). Fixed step time
+  explosion from 20ms to 449ms over 33k steps.
+
+### Dashboard Improvements
+- Header spacing fix: creature name + scene text no longer overlap.
+- Behavior widget: adaptive row layout scales to panel height.
+- Scent source markers visible in rendered videos (cyan glow circles).
+- "Targets found: N" counter in video overlay.
+- Version override for FLOG metadata.
+
+### XML Encoding Fix
+- All `open(xml_path)` calls now use `encoding='utf-8'`.
+  Emoji in creature.xml (🐾) crashed Python's charmap codec on Windows.
+
 ## v0.6.0 (2026-04-17)
 
 ### Vestibulospinal Reflex Fix (Issue #130) — CRITICAL

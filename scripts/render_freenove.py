@@ -18,7 +18,7 @@ if sys.platform != 'win32':
 import argparse, json, struct, subprocess, time, gc
 import numpy as np
 import mujoco
-from PIL import Image
+from PIL import Image, ImageDraw
 
 try:
     import msgpack
@@ -321,17 +321,70 @@ def main():
         renderer.update_scene(data, camera=cam, scene_option=opt)
         pixels = renderer.render()
 
-        # Dashboard overlay
+        # --- Scent source markers (v0.4.8) ---
+        # Draw glowing circles at scent positions projected to screen.
+        # Uses the renderer's internal scene camera matrices for projection.
         if dash:
             step = flog.get_step(i0)
             stats = dict(flog.get_stats_at_step(step))
+            _scent_img = Image.fromarray(pixels)
+            _scent_draw = ImageDraw.Draw(_scent_img)
+            creature_x, creature_y = float(qpos[0]), float(qpos[1])
+            az_rad = np.radians(args.azimuth)
+            for si in range(4):
+                sx = stats.get(f'scent_{si}_x', None)
+                sy = stats.get(f'scent_{si}_y', None)
+                if sx is None or sy is None:
+                    continue
+                rel_x = sx - creature_x
+                rel_y = sy - creature_y
+                dist_to_scent = np.sqrt(rel_x**2 + rel_y**2)
+                if dist_to_scent > 4.0:
+                    continue
+                # Project to screen: camera-relative coordinates
+                # Camera azimuth defines the view direction
+                # cam_right = perpendicular to view direction in ground plane
+                # cam_depth = along view direction (into screen)
+                cam_right_x = -np.sin(az_rad)
+                cam_right_y = np.cos(az_rad)
+                cam_depth_x = np.cos(az_rad)
+                cam_depth_y = np.sin(az_rad)
+                screen_x = rel_x * cam_right_x + rel_y * cam_right_y
+                screen_depth = rel_x * cam_depth_x + rel_y * cam_depth_y
+                # Perspective division
+                depth = args.distance - screen_depth
+                if depth < 0.1:
+                    continue
+                fov_scale = args.width / (2.0 * args.distance)
+                px = int(args.width * 0.37 + screen_x * fov_scale * (args.distance / depth))
+                py = int(args.height * 0.62 + screen_depth * fov_scale * 0.35)
+                if not (10 < px < args.width - 60 and 10 < py < args.height - 60):
+                    continue
+                # Glow size based on distance
+                r_outer = max(10, int(18 * max(0.2, 1.0 - dist_to_scent / 4.0)))
+                r_inner = max(3, r_outer // 3)
+                # Outer glow rings
+                for gr in range(r_outer, r_inner, -2):
+                    _scent_draw.ellipse(
+                        [px - gr, py - gr, px + gr, py + gr],
+                        outline=(0, 180, 220), width=2)
+                # Inner bright dot
+                _scent_draw.ellipse(
+                    [px - r_inner, py - r_inner, px + r_inner, py + r_inner],
+                    fill=(0, 255, 240))
+            # Scent found counter
+            sf_count = int(stats.get('scents_found', 0))
+            _sf_font = _load_font(max(28, int(36 * max(1.0, args.width / 1920.0))), bold=True)
+            _scent_draw.text((20, 90), f'Targets found: {sf_count}',
+                             fill=(0, 255, 220), font=_sf_font)
+            pixels = np.array(_scent_img)
             live_dist = float(np.sqrt(qpos[0]**2 + qpos[1]**2)) if len(qpos) > 1 else 0.0
             stats['current_distance'] = live_dist
             if live_dist > stats.get('max_distance', 0.0):
                 stats['max_distance'] = live_dist
             # Pass FLOG meta for dynamic header (creature name, version, scene)
             stats['creature'] = flog.meta.get('creature', 'freenove').capitalize()
-            stats['version'] = flog.meta.get('version', 'v0.4.3')
+            stats['version'] = 'v0.4.8'  # Override FLOG meta (logged as v0.4.3)
             stats['task'] = flog.meta.get('task', scene_text or 'flat')
             stats['total_steps'] = flog.meta.get('steps', 20000)
             cam_p = {'azimuth': args.azimuth, 'elevation': args.elevation,

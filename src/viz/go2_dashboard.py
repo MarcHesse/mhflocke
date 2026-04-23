@@ -336,14 +336,22 @@ def _widget_behavior_emotion(w, h, s):
     bc = BEH_COLORS.get(beh, ICE)
     ec = EMO_COLORS.get(emo, GREY)
 
+    # Adaptive layout: evenly spaced rows from top to bottom
+    spacing = max(14, (h - 8) // 6)   # 6 rows, evenly distributed
+    row0 = 4                          # BEHAVIOR / EMOTION
+    row1 = row0 + spacing             # WALK / EXCITED
+    row2 = row1 + spacing             # Freq:Amp / Drive
+    row3 = row2 + spacing             # Cur:
+    row4 = row3 + spacing             # DA bar
+
     # Behavior (left half)
-    d.text((12, 6), 'BEHAVIOR', fill=(*CYAN, 240), font=_f(14, True))
-    d.text((12, 24), beh.upper(), fill=(*bc, 255), font=_f(18, True))
-    d.text((12, 50), f'Freq:{freq:.2f}  Amp:{amp:.2f}', fill=(*ICE, 200), font=_f(11))
+    d.text((12, row0), 'BEHAVIOR', fill=(*CYAN, 240), font=_f(14, True))
+    d.text((12, row1), beh.upper(), fill=(*bc, 255), font=_f(18, True))
+    d.text((12, row2), f'Freq:{freq:.2f}  Amp:{amp:.2f}', fill=(*ICE, 200), font=_f(11))
 
     # Emotion + Drive (right half)
     mid = w // 2 + 20
-    d.text((mid, 6), 'EMOTION', fill=(*VIOLET, 240), font=_f(14, True))
+    d.text((mid, row0), 'EMOTION', fill=(*VIOLET, 240), font=_f(14, True))
     # Derive emotion from signals when label is neutral/empty
     # (embodied_emotions.py thresholds are too narrow, always returns neutral)
     if not emo or emo == 'neutral':
@@ -368,23 +376,22 @@ def _widget_behavior_emotion(w, h, s):
                 'sad': 'SAD', 'calm': 'CALM', 'tense': 'TENSE',
                 'focused': 'FOCUSED', 'neutral': 'NEUTRAL'}
     label = emo_nice.get(emo, emo.upper())
-    d.text((mid, 24), label, fill=(*ec, 255), font=_f(18, True))
+    d.text((mid, row1), label, fill=(*ec, 255), font=_f(18, True))
 
-    # Drive + DA on bottom line
+    # Drive (right half)
     if drv:
-        d.text((mid, 48), f'Drive: {drv}', fill=(*GOLD, 200), font=_f(11))
-    # DA reward as tiny bar
-    d.text((12, 68), 'DA', fill=(*PINK, 200), font=_f(11, True))
-    da_bw = w // 2 - 50
-    d.rounded_rectangle([(36, 70), (36 + da_bw, 78)], radius=3, fill=(*BAR_BG, 180))
-    da_px = max(0, min(da_bw, int(da_bw * (da + 1.0) / 2.0)))  # DA is [-1, 1]
+        d.text((mid, row2), f'Drive: {drv}', fill=(*GOLD, 200), font=_f(11))
+    # Curiosity (own line)
+    d.text((12, row3), f'Cur:{curiosity:.3f}', fill=(*CYAN, 200), font=_f(9))
+    # DA reward as compact bar (bottom line)
+    d.text((12, row4), 'DA', fill=(*PINK, 200), font=_f(9))
+    da_bw = w - 100
+    d.rounded_rectangle([(32, row4 + 2), (32 + da_bw, row4 + 8)], radius=2, fill=(*BAR_BG, 180))
+    da_px = max(0, min(da_bw, int(da_bw * (da + 1.0) / 2.0)))
     if da_px > 2:
         dc = GREEN if da > 0 else RED
-        d.rounded_rectangle([(36, 70), (36 + da_px, 78)], radius=3, fill=(*dc, 200))
-    d.text((36 + da_bw + 4, 67), f'{da:+.2f}', fill=(*ICE, 200), font=_f(10))
-
-    # Curiosity
-    d.text((mid, 67), f'Cur:{curiosity:.3f}', fill=(*CYAN, 200), font=_f(10))
+        d.rounded_rectangle([(32, row4 + 2), (32 + da_px, row4 + 8)], radius=2, fill=(*dc, 200))
+    d.text((32 + da_bw + 4, row4), f'{da:+.2f}', fill=(*ICE, 200), font=_f(9))
     return panel
 
 
@@ -393,47 +400,50 @@ def _widget_brain_status(w, h, s):
     """Brain status: Dream, Memory, Synaptogenesis, TPE, Episode.
     Combined widget for ball-scene context showing cognitive state."""
     panel, d = _glass(w, h)
-    d.text((10, 6), 'BRAIN', fill=(*CYAN, 240), font=_f(13, True))
+    d.text((10, 4), 'BRAIN', fill=(*CYAN, 240), font=_f(13, True))
 
-    y = 24
-    line = 16
+    # Adaptive line spacing: fit all rows into available height
+    n_rows = 6
+    line = max(11, (h - 20) // n_rows)
+    y = 18
+    _fs = 10 if h < 100 else 11  # smaller font when panel is tight
 
     # Task PE (DishBrain signal)
     tpe = s.get('task_pe', 0.0)
     tpe_c = GREEN if tpe < -0.2 else (GOLD if tpe < 0.3 else RED)
-    d.text((10, y), 'Task PE', fill=(*GREY, 200), font=_f(11))
-    d.text((w - 60, y), f'{tpe:+.2f}', fill=(*tpe_c, 240), font=_f(12, True))
+    d.text((10, y), 'Task PE', fill=(*GREY, 200), font=_f(_fs))
+    d.text((w - 60, y), f'{tpe:+.2f}', fill=(*tpe_c, 240), font=_f(_fs, True))
     y += line
 
     # Ball episode
     ball_ep = s.get('ball_episode', 0)
-    d.text((10, y), 'Episode', fill=(*GREY, 200), font=_f(11))
-    d.text((w - 60, y), f'#{ball_ep}', fill=(*PINK, 220), font=_f(12, True))
+    d.text((10, y), 'Episode', fill=(*GREY, 200), font=_f(_fs))
+    d.text((w - 60, y), f'#{ball_ep}', fill=(*PINK, 220), font=_f(_fs, True))
     y += line
 
     # Consciousness Level
     cl = s.get('c_level', 0)
-    d.text((10, y), 'Conscious', fill=(*GREY, 200), font=_f(11))
-    d.text((w - 60, y), f'L{cl}', fill=(*ICE, 220), font=_f(12, True))
+    d.text((10, y), 'Conscious', fill=(*GREY, 200), font=_f(_fs))
+    d.text((w - 60, y), f'L{cl}', fill=(*ICE, 220), font=_f(_fs, True))
     y += line
 
     # PCI
     pci = s.get('pci', 0.0)
     pci_c = GREEN if pci > 0.3 else (GOLD if pci > 0.2 else RED)
-    d.text((10, y), 'PCI', fill=(*GREY, 200), font=_f(11))
-    d.text((w - 60, y), f'{pci:.3f}', fill=(*pci_c, 220), font=_f(12))
+    d.text((10, y), 'PCI', fill=(*GREY, 200), font=_f(_fs))
+    d.text((w - 60, y), f'{pci:.3f}', fill=(*pci_c, 220), font=_f(_fs))
     y += line
 
     # Learning progress
     lp = s.get('learning_progress', s.get('pred_error', 0.0))
-    d.text((10, y), 'Learning', fill=(*GREY, 200), font=_f(11))
-    d.text((w - 60, y), f'{lp:.4f}', fill=(*ICE, 200), font=_f(11))
+    d.text((10, y), 'Learning', fill=(*GREY, 200), font=_f(_fs))
+    d.text((w - 60, y), f'{lp:.4f}', fill=(*ICE, 200), font=_f(_fs))
     y += line
 
-    # Correction magnitude (cerebellum)
-    corr = s.get('correction_mag', 0.0)
-    d.text((10, y), 'CB Corr', fill=(*GREY, 200), font=_f(11))
-    d.text((w - 60, y), f'{corr:.4f}', fill=(*ORANGE, 200), font=_f(11))
+    if y + 14 < h:  # only draw if it fits
+        corr = s.get('correction_mag', 0.0)
+        d.text((10, y), 'CB Corr', fill=(*GREY, 200), font=_f(_fs))
+        d.text((w - 60, y), f'{corr:.4f}', fill=(*ORANGE, 200), font=_f(_fs))
 
     return panel
 
@@ -691,9 +701,11 @@ def _brand_bar(w, h, stats):
 
     creature = stats.get('creature', 'Go2')
     task = stats.get('task', '')
-    draw.text((280, 6), creature, fill=(*WHITE, 200), font=_f(17, True))
+    _cf = _f(17, True)
+    draw.text((280, 6), creature, fill=(*WHITE, 200), font=_cf)
+    _cw = int(draw.textlength(creature, font=_cf))
     if task:
-        draw.text((330, 6), f'· {task}', fill=(*GREY, 140), font=_f(13))
+        draw.text((280 + _cw + 10, 6), task, fill=(*GREY, 140), font=_f(13))
 
     if total > 0:
         prog = min(1.0, step / total)
@@ -1043,11 +1055,11 @@ class Go2DashboardOverlay:
         # Widget proportions (relative weights — bigger = more space)
         widgets = [
             ('cpg_mix',    3, _widget_cpg_mix),
-            ('behavior',   3, _widget_behavior_emotion),
+            ('behavior',   4, _widget_behavior_emotion),
             ('cerebellum', 4, _widget_cerebellum),       # Needs more: has diagram
             ('neuromod',   3, _widget_neuromod),
             ('fwd_model',  3, _widget_forward_model),
-            ('brain',      3, _widget_brain_status),
+            ('brain',      2, _widget_brain_status),
         ]
         total_weight = sum(w[1] for w in widgets)
         total_pads = (len(widgets) - 1) * pad

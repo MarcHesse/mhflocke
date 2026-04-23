@@ -1,7 +1,25 @@
 """
-MH-FLOCKE — Cognitive Brain v0.4.1
+MH-FLOCKE — Cognitive Brain v0.4.6 (Baby-KI + Olfactory Intrinsic Reward)
 ========================================
 15-step closed-loop cognitive architecture orchestrating all neural modules.
+
+v0.4.6: Olfactory intrinsic reward (2026-04-22).
+  - Scent approach reward: smell_strength delta + tonic pull.
+  - Biology: neonates turn toward milk smell without external reward
+    (Varendi & Porter 2001). Scent is inherently hedonic.
+  - Arousal Drive disabled (v0.4.3-v0.4.5 was a dead end).
+
+v0.4.5: Additive arousal oscillator (dead end — 0.47m).
+v0.4.3: Constant arousal (replaced trainer — 0.30m, much worse).
+v0.4.2: Baby-KI support (2026-04-21).
+  - Exposes vestibular_discomfort, body_anomaly EMA, and proprioceptive
+    improvement delta as first-class state on CognitiveBrain.
+  - Adds get_intrinsic_reward() — pure self-generated reward from:
+      -vestibular_discomfort + curiosity + empowerment + proprio_improvement
+  - No external_reward is used in get_intrinsic_reward(). The training loop
+    still receives external_reward via process() and may or may not pass it;
+    process() continues to work unchanged for v0.5.x RL runs.
+v0.4.1: original 15-step architecture.
 """
 
 import torch
@@ -69,6 +87,26 @@ class CognitiveBrainConfig:
 
     # PCI
     pci_interval: int = 500  # PCI messen alle N steps (teuer!)
+
+    # ==========================================================
+    # Baby-KI intrinsic reward weights (v0.4.2)
+    # ==========================================================
+    vestibular_weight: float = 1.0          # -vestibular_discomfort is primary pain signal
+    curiosity_weight_intrinsic: float = 1.0  # reuses self._curiosity_reward (already normalized)
+    empowerment_weight_intrinsic: float = 1.0
+    proprio_weight: float = 1.0
+    proprio_ema_decay: float = 0.99         # EMA decay for body_anomaly smoothing
+    scent_weight: float = 2.0              # v0.4.6: scent approach feels good (olfactory hedonics)
+
+    # Arousal-driven motor activation (v0.4.3)
+    # When True, CognitiveBrain sets tonic current on Motor Hidden neurons
+    # from internal arousal state. The trainer should NOT override this.
+    # When False (default), the trainer controls tonic current externally.
+    intrinsic_arousal_drive: bool = False
+    arousal_tonic_base: float = 0.02        # baseline tonic (matches trainer default)
+    arousal_tonic_scale: float = 0.06       # max additional tonic from arousal
+    arousal_oscillator_period: int = 2000   # ultradian cycle length in steps (~60s at 30Hz)
+    arousal_oscillator_depth: float = 0.5   # modulation depth (0=flat, 1=full swing)
 
     device: str = 'cpu'
 
@@ -210,6 +248,19 @@ class CognitiveBrain:
         self._gwt_winner = ''
         self._consciousness_level = 0
 
+        # ==========================================================
+        # Baby-KI state (v0.4.2)
+        # ==========================================================
+        # These are the four components of get_intrinsic_reward().
+        # All are updated inside process() and read inside
+        # get_intrinsic_reward(). They are also exposed via get_state().
+        self._vestibular_discomfort = 0.0      # from extra_sensor_data, 0..1
+        self._body_anomaly_ema = 0.0           # EMA of body_schema.anomaly
+        self._proprioceptive_delta = 0.0       # -Δ(body_anomaly_ema): positive = body obeys better
+        self._intrinsic_reward = 0.0           # last value returned by get_intrinsic_reward()
+        self._scent_reward = 0.0               # v0.4.6: from smell_strength delta
+        self._arousal_oscillator = 0.0         # v0.4.5: computed in step 15c, read by trainer
+
     def process(self, sensor_values, snn_input: torch.Tensor,
                 output_spikes: torch.Tensor, controls: list,
                 external_reward: float = 0.0,
@@ -259,6 +310,19 @@ class CognitiveBrain:
         )
         body_anomaly = body_result.get('anomaly', 0.0)
         body_confidence = body_result.get('body_confidence', 0.0)
+
+        # v0.4.2: Proprioceptive improvement signal
+        # EMA of body_anomaly smooths the noisy per-step value.
+        # The per-step IMPROVEMENT (negative delta) is the reward signal:
+        #   body obeys better  → anomaly↓ → delta<0 → reward>0
+        #   body obeys worse   → anomaly↑ → delta>0 → reward<0
+        # Scale ×5 to bring into same order as curiosity (~0.3).
+        _prev_ema = self._body_anomaly_ema
+        self._body_anomaly_ema = (
+            self.config.proprio_ema_decay * self._body_anomaly_ema
+            + (1.0 - self.config.proprio_ema_decay) * float(body_anomaly)
+        )
+        self._proprioceptive_delta = 5.0 * (_prev_ema - self._body_anomaly_ema)
 
         # ============================================================
         # 3. WORLD MODEL — Vorhersage + Prediction Error
@@ -364,8 +428,29 @@ class CognitiveBrain:
             prediction_error=prediction_error,
             reward=external_reward,
             is_fallen=is_fallen,
+            extra_data=extra_sensor_data,
         )
         somatic_markers = self.emotions.get_somatic_markers()
+
+        # v0.4.2: Expose vestibular_discomfort as first-class brain state.
+        # The training loop writes it into extra_sensor_data every step.
+        # For Baby-KI it is the PRIMARY discomfort signal.
+        self._vestibular_discomfort = float(_extra.get('vestibular_discomfort', 0.0))
+
+        # v0.4.6: Scent approach reward — smell getting stronger feels good.
+        # Biology: olfactory hedonics — neonates turn toward milk smell
+        # (Varendi & Porter 2001). Scent strength increase = positive reward.
+        _smell_now = float(_extra.get('smell_strength', 0.0))
+        _smell_prev = getattr(self, '_last_smell_strength', 0.0)
+        # Reward = delta of smell strength, scaled. Getting closer = positive.
+        # With quadratic gradient (v0.4.6), delta is ~0.005 per step at 2m,
+        # ~0.05 per step at 1m. Scale ×5 to make it a meaningful signal.
+        _scent_delta = (_smell_now - _smell_prev) * 5.0
+        # Tonic pull: stronger smell = stronger motivation to keep moving.
+        # At 1m: sm≈0.44, tonic=0.22. At 0.5m: sm≈1.0, tonic=0.50.
+        _scent_tonic = _smell_now * 0.5
+        self._scent_reward = _scent_delta + _scent_tonic
+        self._last_smell_strength = _smell_now
 
         # ============================================================
         # 5. MEMORY — Record episodes + retrieve similar ones
@@ -421,6 +506,12 @@ class CognitiveBrain:
             'learning_progress': self.metacognition.learning_progress,
             'smell_strength': _extra.get('smell_strength', 0.0),
             'scent_reward': _extra.get('scent_reward', 0.0),
+            # v0.7.0: Body Awareness + Gait Quality + Spatial Map
+            'gait_quality': _extra.get('gait_quality', 0.5),
+            'limb_dead': _extra.get('limb_dead', []),
+            'limb_degraded': _extra.get('limb_degraded', []),
+            'spatial_explored': _extra.get('spatial_explored', 0.0),
+            'ball_salience': _extra.get('ball_salience', 0.0),
         })
 
         # ============================================================
@@ -717,6 +808,40 @@ class CognitiveBrain:
                     print(f"  [PCI] Error: {e}", file=sys.stderr)
                     self._pci_error_logged = True
 
+        # ============================================================
+        # 15c. AROUSAL DRIVE — Internal arousal oscillator (v0.4.5)
+        # ============================================================
+        # Biology: RAS modulates cortical activity, it doesn't replace it.
+        # v0.4.3/v0.4.4 replaced the trainer's NE/tonic → lost curiosity
+        # and boredom terms → DA dropped → distance dropped.
+        #
+        # v0.4.5: Brain computes the arousal oscillator value (0..1) but
+        # does NOT set NE/tonic directly. Instead it stores the value in
+        # self._arousal_oscillator for the trainer to read and ADD to its
+        # own NE/tonic computation.
+        #
+        # Ultradian oscillator: neonatal mammals show 1-3 minute activity
+        # cycles (Blumberg et al. 2005). The oscillator creates behavioral
+        # diversity by varying motor drive intensity over time.
+        #
+        # Ref: Moruzzi & Magoun 1949, Blumberg et al. 2005
+        self._arousal_oscillator = 0.0  # default: no modulation
+        if self.config.intrinsic_arousal_drive:
+            _arousal = emotional_state.arousal
+            _boredom = self.curiosity.boredom_counter / max(self.curiosity.config.boredom_steps, 1)
+            _boredom = min(1.0, _boredom)
+            _expl = drive_state.strengths.get('exploration', 0.3) if hasattr(drive_state, 'strengths') else 0.3
+
+            _reactive = 0.5 * _arousal + 0.3 * _boredom + 0.2 * _expl
+
+            import math
+            _phase = (self._step_count % self.config.arousal_oscillator_period) / self.config.arousal_oscillator_period
+            _osc = 0.5 + 0.5 * math.sin(2.0 * math.pi * _phase)
+
+            _depth = self.config.arousal_oscillator_depth
+            self._arousal_oscillator = (1.0 - _depth) * _reactive + _depth * _osc
+            self._arousal_oscillator = max(0.05, min(1.0, self._arousal_oscillator))
+
         # State Update
         self._last_sensor = sensor_t.detach().clone()
         self._last_motor = motor_t.detach().clone()
@@ -743,7 +868,45 @@ class CognitiveBrain:
             'astrocyte_active': self.astrocytes.above_threshold_count,
             'pci': self._last_pci,
             'dreamed': dream_result is not None,
+            # v0.4.2: Baby-KI state
+            'vestibular_discomfort': self._vestibular_discomfort,
+            'body_anomaly_ema': self._body_anomaly_ema,
+            'proprioceptive_delta': self._proprioceptive_delta,
+            'intrinsic_reward': self._intrinsic_reward,
+            'scent_reward': self._scent_reward,
+            'arousal_oscillator': self._arousal_oscillator,
         }
+
+    # ================================================================
+    # Baby-KI: Pure intrinsic reward (v0.4.2)
+    # ================================================================
+
+    def get_intrinsic_reward(self) -> float:
+        """
+        Pure intrinsic reward — no external guidance.
+
+        Combines five body-generated signals:
+          -vestibular_discomfort : Losing balance feels bad (primary pain).
+          +curiosity_reward      : Novel states feel good.
+          +empowerment_reward    : Having control over sensor state feels good.
+          +proprioceptive_delta  : Body obeys BETTER than before feels good.
+          +scent_reward          : Smell getting stronger feels good (v0.4.6).
+
+        Must be called AFTER process() in the same step.
+
+        Returns:
+            Intrinsic reward value. Typical range -1.0 .. +1.0.
+        """
+        cfg = self.config
+        vest = -cfg.vestibular_weight * self._vestibular_discomfort
+        curi = cfg.curiosity_weight_intrinsic * self._curiosity_reward
+        empw = cfg.empowerment_weight_intrinsic * self._empowerment_reward
+        prop = cfg.proprio_weight * self._proprioceptive_delta
+        scnt = cfg.scent_weight * self._scent_reward
+
+        r = float(vest + curi + empw + prop + scnt)
+        self._intrinsic_reward = r
+        return r
 
     def _hebbian_step(self):
         """Reines Hebb-Learning: koinzidente Spikes verstärken Synapsen."""
@@ -921,4 +1084,11 @@ class CognitiveBrain:
             'behavior_motor': self.behavior_executor.get_state() if self._motor_modulation else {},
             'language_bridge_active': self.language_bridge is not None,
             'has_dreamed': self._has_dreamed,
+            # v0.4.2: Baby-KI state
+            'vestibular_discomfort': self._vestibular_discomfort,
+            'body_anomaly_ema': self._body_anomaly_ema,
+            'proprioceptive_delta': self._proprioceptive_delta,
+            'intrinsic_reward': self._intrinsic_reward,
+            'scent_reward': self._scent_reward,
+            'arousal_oscillator': self._arousal_oscillator,
         }

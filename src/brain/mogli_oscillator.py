@@ -594,6 +594,12 @@ class MogliCPG:
                 leg_amplitude = amplitude * (1.0 + steer_gain)
             leg_amplitude = max(leg_amplitude, amplitude * 0.3)
 
+            # Per-leg amplitude scale (for leg-loss compensation)
+            # Set externally via cpg._leg_amplitude_scale = {'FL': 1.4, ...}
+            if hasattr(self, '_leg_amplitude_scale'):
+                leg_name_pf = self._leg_names[leg_idx]
+                leg_amplitude *= self._leg_amplitude_scale.get(leg_name_pf, 1.0)
+
             # Raw sine for this leg
             raw_sin = np.sin(phase)
 

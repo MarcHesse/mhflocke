@@ -103,7 +103,7 @@ class SpinalCPG:
 
     def compute(self, dt: float = 0.005, arousal: float = 0.5,
                 freq_scale: float = 1.0, amp_scale: float = 1.0,
-                steering: float = 0.0) -> np.ndarray:
+                steering: float = 0.0, yaw_rate: float = 0.0) -> np.ndarray:
         """
         Generate one step of CPG motor commands (per-joint, direct control).
         
@@ -220,7 +220,8 @@ class SpinalCPG:
 
     def compute_tendon(self, dt: float = 0.005, arousal: float = 0.5,
                        freq_scale: float = 1.0,
-                       amp_scale: float = 1.0) -> np.ndarray:
+                       amp_scale: float = 1.0,
+                       yaw_rate: float = 0.0) -> np.ndarray:
         """
         Generate CPG commands for tendon-actuated quadrupeds (dm_control style).
         
