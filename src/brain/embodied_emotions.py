@@ -6,6 +6,7 @@ Valence-arousal emotional system derived from body state signals.
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
+from collections import deque
 import time
 import numpy as np
 
@@ -49,8 +50,7 @@ class EmbodiedEmotions:
 
     def __init__(self):
         self.state = EmotionalState()
-        self.history: List[EmotionalState] = []
-        self.max_history: int = 500
+        self.history: deque = deque(maxlen=500)
         self._step_count = 0
 
     def update(self, sensor_data: dict, prediction_error: float,
@@ -205,8 +205,6 @@ class EmbodiedEmotions:
         self.state.timestamp = time.time()
         
         # History
-        if len(self.history) >= self.max_history:
-            self.history.pop(0)
         self.history.append(EmotionalState(
             valence=self.state.valence,
             arousal=self.state.arousal,

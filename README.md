@@ -6,15 +6,7 @@
 
 **Biologically Grounded Embodied Cognition for Quadruped Locomotion Learning**
 
-> [!IMPORTANT]
-> **MH-FLOCKE is under continuous development by a solo researcher.**
-> The `main` branch reflects the current state of an evolving codebase.
-> Published paper results are reproducible using the tagged versions.
-> See [Papers & Reproducibility](#papers--reproducibility) for details.
-
-A simulated quadruped learns to walk through a 15-step closed-loop cognitive architecture integrating Izhikevich spiking neural networks, cerebellar forward models with DCN rebound bursting, central pattern generators, embodied emotions, and reward-modulated spike-timing-dependent plasticity — no end-to-end RL required.
-
-**v0.7.0:** Baby-KI with Run-and-Tumble chemotaxis navigation. The dog finds scent targets autonomously using pure intrinsic reward — no external reward signal. 5.43m, 0 falls, 4 targets found. New modules: Body Awareness, Spatial Map, Gait Quality, Directed Learning. SNN scaled to 560 neurons on Pi4 at 77 Hz.
+A simulated quadruped learns to walk through a 15-step closed-loop cognitive architecture integrating spiking neural networks, cerebellar forward models, central pattern generators, embodied emotions, and reward-modulated spike-timing-dependent plasticity — no end-to-end RL required.
 
 ## Key Results (10-Seed Validation, Unitree Go2)
 
@@ -67,11 +59,9 @@ The Raspberry Pi 4 runs the **same SNN and cerebellum code** as the MuJoCo simul
 
 - Kit: [Freenove FNK0050](https://www.freenove.com/fnk0050) (~100€)
 - Compute: Raspberry Pi 4 (2GB+ RAM)
-- 12 SG90 servos, PCA9685 driver, MPU6050 IMU, HC-SR04 ultrasonic
-- SNN: 560 Izhikevich neurons (48 MF + 269 GrC + 47 GoC + 24 PkC + 24 DCN + 136 MH + 12 OUT)
-- Per-population neuron dynamics: Regular Spiking, Intrinsically Bursting, Chattering, Rebound Burst
-- Obstacle reflexes: hardware-matched brainstem-level STOP/SLOW/REVERSE/TURN
-- Control loop: 77Hz with PyTorch CPU-only
+- 12 SG90 servos, PCA9685 driver, MPU6050 IMU
+- SNN: 232 neurons (48 MF + 106 GrC + 18 GoC + 24 PkC + 24 DCN + 12 OUT)
+- Control loop: 29Hz with PyTorch CPU-only
 
 ### Running on Pi
 
@@ -115,24 +105,15 @@ COMBINED REWARD → R-STDP LEARNING → SYNAPTOGENESIS →
 HEBBIAN → DREAM MODE → NEUROMODULATION
 ```
 
-The architecture operates across nested timescales, following the biological hierarchy of motor control:
+The architecture operates across nested timescales:
 
-- **Spinal reflexes** (every step) — posture maintenance, stretch reflexes, muscle tone
-- **Brainstem reflexes** — obstacle avoidance (stop, slow, reverse, turn), righting reflexes
+- **Spinal reflexes** (every step) — posture maintenance, stretch reflexes
 - **Central Pattern Generator** — innate gait patterns, competence-gated blending with learned actor
-- **Cerebellar forward model** — Marr-Albus-Ito framework with DCN rebound bursting, prediction error-driven motor corrections via reticulospinal pathway
-- **SNN with R-STDP** — 5000+ Izhikevich neurons with per-population dynamics, reward-modulated spike-timing-dependent plasticity
+- **Cerebellar forward model** — Marr-Albus-Ito framework, prediction error-driven motor corrections
+- **SNN with R-STDP** — 5000+ Izhikevich neurons, reward-modulated spike-timing-dependent plasticity
 - **Cognitive layers** — Global Workspace Theory, embodied emotions, episodic memory, motivational drives
 
 The CPG provides a locomotion prior from step 1. As the SNN actor learns, a competence gate smoothly transitions from 90% CPG to 40% CPG / 60% actor. The creature walks immediately and improves through learning — no random exploration phase required.
-
-### Roadmap
-
-The current architecture implements biological layers 1-3 (spinal, brainstem, cerebellum). Next milestones:
-
-- **Mogli Oscillator** — Replacing the mathematical CPG with coupled SNN half-center oscillators built from Izhikevich neurons. Each leg gets its own oscillator; inter-leg coupling via interneurons produces gaits. This enables per-leg adaptation, realistic turning (asymmetric step lengths), gait transitions (walk→trot→gallop), and automatic compensation for limb loss — capabilities impossible with the current sin/cos CPG.
-
-- **Spatial Planning** — A planning layer inspired by hippocampal place cells and prefrontal cortex working memory. This will enable the robot to build a cognitive map of its environment and plan paths around obstacles — moving from reactive avoidance to goal-directed navigation.
 
 ## Ablation Design
 
@@ -176,8 +157,7 @@ The Brain3D visualization in rendered videos shows actual SNN topology and spike
 ```
 mhflocke/
 ├── scripts/
-│   ├── train_v032.py           # Main training loop (external reward)
-│   ├── train_baby.py           # Baby-KI training (intrinsic reward)
+│   ├── train_v032.py           # Main training loop
 │   ├── freenove_bridge.py      # Pi hardware bridge (unified codebase)
 │   ├── freenove_calibrate.py   # Servo calibration tool
 │   ├── render_go2_mujoco.py    # Go2 video renderer
@@ -215,42 +195,39 @@ Full documentation with architecture details, API references, mathematical formu
 
 25 pages covering: Architecture, SNN Controller, R-STDP, Cerebellum, CPG, Task Prediction Error, Reflexes, Emotions & Drives, Training Pipeline, FLOG Format, World Model, Global Workspace, Body Schema, Memory, Metacognition, and more.
 
-## Papers & Reproducibility
-
-MH-FLOCKE is an active research project. The `main` branch evolves continuously.
-To reproduce published results, use the tagged versions:
-
-### Paper 1 — Architecture & Ablation
+## Paper
 
 > **MH-FLOCKE: Biologically Grounded Embodied Cognition Through a 15-Step Closed-Loop Architecture for Quadruped Locomotion Learning**
 >
 > Marc Hesse (2026). Independent Researcher, Potsdam, Germany.
-> Preprint: [aixiv.science](https://aixiv.science)
-
-```bash
-git checkout v0.4.1-paper1
-```
-
-### Paper 2 — Sim-to-Real Transfer
-
-> **On-Device Spiking Neural Network Locomotion Learning on a €100 Quadruped: Sim-to-Real with Brain Persistence**
 >
-> Marc Hesse (2026). Independent Researcher, Potsdam, Germany.
-
-```bash
-git checkout v0.4.3-paper2
-```
+> Preprint: [aixiv.science](https://aixiv.science)
 
 ## Videos
 
-- [Baby-KI: Run-and-Tumble Navigation (No Reward)](https://www.youtube.com/@mhflocke) — NEW
 - [Freenove Robot Dog — SNN on Real Hardware](https://www.youtube.com/watch?v=7iN8tB2xLHI)
 - [Video #3: Go2 Ball Interaction](https://www.youtube.com/watch?v=Jo7UM6pEFMg)
 - [YouTube Channel: @mhflocke](https://www.youtube.com/@mhflocke)
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
+### v0.4.2 (2026-04-11)
+- **Freenove sim-to-real**: Unified codebase — Pi runs same `src/brain/` as simulator (PyTorch CPU-only). Brain trained in MuJoCo transfers directly to Raspberry Pi 4.
+- **Bridge v4.0**: `freenove_bridge.py` imports `src/brain/` directly. No separate SNN implementation for hardware.
+- **`topology.py`**: Shared cerebellar population computation without MuJoCo dependency. Both simulator and Pi use the same function.
+- **Brain3D visualization**: Population-aware layout driven by actual SNN topology and training data. Layer labels show per-population neuron counts.
+- **FLOG extended**: Training logs store `population_sizes` metadata (per-population neuron counts) for correct visualization.
+- **Live dashboard**: Web-based real-time display of all 6 cerebellar populations with live spike activity on Pi hardware.
+- **Pi deployment**: Complete guide (`docs/FREENOVE_PI_DEPLOY.md`), `requirements-pi.txt`, calibration tool, servo config.
+- **Renderers updated**: Both Freenove and Go2 renderers read population topology from FLOG metadata.
+
+### v0.4.0 (2026-04-06)
+- Initial Freenove integration: Bridge v2.5, IMU support, 8.2m first real-world run
+- Brain persistence across sessions (18,746 steps over 3 sessions)
+
+### v0.3.4 (2026-03-28)
+- Go2 50k training: 8.222m, 0 falls, actor competence 0.847
+- 10-seed ablation: B1 45.15±0.67m vs PPO 12.83±7.78m
 
 ## Acknowledgments
 
@@ -280,5 +257,5 @@ The Unitree Go2 model files in `creatures/go2/` are licensed under BSD-3-Clause 
 ## Contact
 
 - Website: [mhflocke.com](https://mhflocke.com)
-- Email: info@mhflocke.com
+- Email: marc@mhflocke.com
 - Reddit: [u/mhflocke](https://reddit.com/u/mhflocke)

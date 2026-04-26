@@ -195,7 +195,7 @@ def _save_world_model(wm) -> dict:
     """World Model SNN + Prediction History."""
     return {
         'snn': _save_snn(wm.snn),
-        'prediction_history': list(wm._prediction_history[-200:]) if hasattr(wm, '_prediction_history') else [],
+        'prediction_history': list(wm._prediction_history)[-200:] if hasattr(wm, '_prediction_history') else [],
         'n_sensors': wm.n_sensors,
         'n_motors': wm.n_motors,
     }
@@ -226,7 +226,7 @@ def _save_gwt(gwt) -> dict:
         'winning_module': gwt._winning_module,
         'broadcast_signal': gwt._broadcast_signal.cpu(),
         'broadcast_age': gwt._broadcast_age,
-        'history': gwt._history[-100:] if gwt._history else [],
+        'history': list(gwt._history)[-100:] if gwt._history else [],
     }
 
 
@@ -257,7 +257,7 @@ def _save_emotions(emo) -> dict:
         'dominant_emotion': emo.state.dominant_emotion,
         'history': [
             {'valence': h.valence, 'arousal': h.arousal, 'emotion': h.dominant_emotion}
-            for h in emo.history[-200:]
+            for h in list(emo.history)[-200:]
         ],
         'step_count': emo._step_count,
     }
@@ -417,7 +417,7 @@ def _save_consistency(cc) -> dict:
     """Consistency State."""
     return {
         'last_dissonance': cc._last_dissonance,
-        'dissonance_history': cc._dissonance_history[-200:],
+        'dissonance_history': list(cc._dissonance_history)[-200:],
         'step_count': cc._step_count,
         'alert_count': cc._alert_count,
     }
@@ -528,7 +528,7 @@ def _save_dream_engine(dream) -> dict:
     """Replay Buffer."""
     buffer = []
     if hasattr(dream, '_replay_buffer'):
-        for entry in dream._replay_buffer[-200:]:
+        for entry in list(dream._replay_buffer)[-200:]:
             if isinstance(entry, dict):
                 serializable = {}
                 for k, v in entry.items():

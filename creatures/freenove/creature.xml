@@ -3,6 +3,9 @@
   <!-- 12 actuators (no head), foot geoms named FL/FR/RL/RR for pipeline -->
   <compiler angle="degree" coordinate="local" inertiafromgeom="true"/>
   <option timestep="0.005" gravity="0 0 -9.81" iterations="50" solver="Newton" integrator="Euler"/>
+  <visual>
+    <global offwidth="1920" offheight="1920"/>
+  </visual>
   <default>
     <joint armature="0.005" damping="0.3" limited="true"/>
     <geom friction="0.7 0.3 0.01" condim="3" conaffinity="1" contype="1" rgba="0.15 0.15 0.18 1"/>
@@ -46,6 +49,7 @@
         <geom name="us_L" type="cylinder" size="0.008 0.004" pos="0.035 0.012 0.008" euler="0 90 0" rgba="0.75 0.75 0.75 1" mass="0.004"/>
         <geom name="us_R" type="cylinder" size="0.008 0.004" pos="0.035 -0.012 0.008" euler="0 90 0" rgba="0.75 0.75 0.75 1" mass="0.004"/>
         <geom name="cam" type="box" size="0.012 0.012 0.005" pos="0.035 0 -0.008" rgba="0.1 0.3 0.1 1" mass="0.003"/>
+        <camera name="onboard" pos="0.035 0 -0.005" xyaxes="0 -1 0 0 0 1" fovy="60" resolution="64 48"/>
         <site name="rangefinder" pos="0.035 0 0.008" euler="0 90 0" size="0.003"/>
       </body>
       <body name="fl_hip" pos="0.068 0.038 -0.005">

@@ -221,7 +221,7 @@ class PatternExtractor:
 class ExperienceBuffer:
     """Puffer für ungefilterte Erfahrungen."""
 
-    def __init__(self, max_size: int = 5000):
+    def __init__(self, max_size: int = 500):  # Was 5000 — O(N×K) clustering is too expensive
         self.max_size = max_size
         self._buffer = deque(maxlen=max_size)
 
@@ -303,7 +303,7 @@ class ExperienceBuffer:
         return frequent
 
     def clear(self):
-        self._buffer = []
+        self._buffer.clear()  # Keep deque, just empty it
 
     def size(self) -> int:
         return len(self._buffer)
@@ -353,6 +353,9 @@ class Synaptogenesis:
             min_count=self.config.consolidation_threshold,
             similarity_threshold=self.config.similarity_threshold,
         )
+
+        # Clear buffer after extracting patterns — prevents O(N²) growth
+        self.buffer.clear()
 
         n_new = 0
         n_updated = 0

@@ -310,10 +310,14 @@ class SNNController:
             sf[self.spikes] = 1.0
 
             if self._n_synapses > 0:
-                if n < 500:
+                if n < 600:  # Dense path for small SNNs (Freenove: 560)
                     if self._dense_weights is None or self._dense_weights_dirty:
-                        if self.weights is not None:
-                            self._dense_weights = self.weights.to_dense()
+                        if self._weight_indices is not None and self._weight_values is not None:
+                            if self._dense_weights is None:
+                                self._dense_weights = torch.zeros(n, n, device=self.device, dtype=self.dtype)
+                            else:
+                                self._dense_weights.zero_()
+                            self._dense_weights[self._weight_indices[0], self._weight_indices[1]] = self._weight_values
                         self._dense_weights_dirty = False
                     if self._dense_weights is not None:
                         torch.mv(self._dense_weights.t(), sf, out=self._I_syn_buf)
@@ -566,14 +570,8 @@ class SNNController:
 
         self._eligibility *= 0.3
 
-        # Update weight representation
-        if self._dense_weights is not None and self.config.n_neurons < 500:
-            src = self._weight_indices[0]
-            tgt = self._weight_indices[1]
-            self._dense_weights[src, tgt] = self._weight_values
-            self._dense_weights_dirty = False
-        else:
-            self._rebuild_sparse_weights()
+        # Update weight representation — mark dirty, rebuild lazily in next forward()
+        self._dense_weights_dirty = True
 
     def apply_surrogate_gradient_step(self, loss: torch.Tensor):
         """One BPTT step with Surrogate Gradients. R-STDP remains primary."""

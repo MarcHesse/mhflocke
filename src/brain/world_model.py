@@ -76,7 +76,7 @@ class SpikingWorldModel:
         self.snn.connect_populations('wm_hidden', 'wm_hidden', prob=0.02, weight_range=(0.05, 0.3))
 
         # Output-Membranpotential als analoges Signal
-        self._prediction_history: List[float] = []
+        self._prediction_history: deque = deque(maxlen=2000)
 
     def predict(self, sensor_input: torch.Tensor,
                 motor_command: torch.Tensor) -> torch.Tensor:

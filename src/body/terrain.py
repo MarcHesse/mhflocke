@@ -421,6 +421,54 @@ def inject_ball(xml_string: str, pos=(8.0, 1.0, 0.12), radius=0.1, mass=0.3) -> 
     return xml_string.replace('</worldbody>', ball_xml + '\n  </worldbody>')
 
 
+def inject_light(xml_string: str, pos=(2.0, 0.5, 0.02), radius=0.15) -> str:
+    """
+    Inject a bright light source (glowing sphere) into a MuJoCo scene.
+
+    The light source is a visual target for phototaxis navigation.
+    It has a freejoint so its position can be updated via qpos,
+    but very low mass so it doesn't affect physics meaningfully.
+
+    The sphere uses high emission (1.0) and bright white/yellow color
+    so the onboard camera can detect it via bilateral brightness.
+    A real MuJoCo <light> is also attached to create actual illumination
+    on the ground around the sphere, making the camera gradient realistic.
+
+    Hardware equivalent: flashlight pointed at the floor.
+
+    Args:
+        xml_string: MuJoCo XML as string
+        pos: (x, y, z) initial position
+        radius: visual sphere radius
+
+    Returns:
+        Modified XML with light source body added
+    """
+    # Emissive material must go in <asset> section
+    light_material = """
+    <material name="light_emissive" rgba="1.0 0.95 0.7 0.9" emission="1"/>"""
+
+    light_body = f"""
+    <!-- Light source: glowing sphere for phototaxis (injected by scene) -->
+    <body name="light_target" pos="{pos[0]} {pos[1]} {pos[2]}">
+      <freejoint name="light_joint"/>
+      <geom name="light_geom" type="sphere" size="{radius}" mass="0.001"
+            material="light_emissive"
+            condim="1" conaffinity="0" contype="0"/>
+      <light name="light_spot" pos="0 0 0.05" dir="0 0 -1"
+             diffuse="1.0 0.95 0.7" specular="0.5 0.5 0.3"
+             attenuation="1.0 0.5 0.2" cutoff="60" exponent="10"/>
+    </body>"""
+
+    # Insert material into <asset> (before closing </asset>)
+    if '</asset>' in xml_string:
+        xml_string = xml_string.replace('</asset>',
+                                        light_material + '\n  </asset>')
+
+    # Insert body before </worldbody>
+    return xml_string.replace('</worldbody>', light_body + '\n  </worldbody>')
+
+
 def inject_wall(xml_string: str, distance: float = 1.5,
                 width: float = 3.0, height: float = 0.3,
                 thickness: float = 0.20) -> str:

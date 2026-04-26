@@ -302,6 +302,13 @@ def main():
 
     # Main render
     t0 = time.time()
+    stats = {}  # Initialize for minimap before first dashboard frame
+    # Trail buffer for mini-map
+    _trail = []
+    _minimap_size = min(args.width // 5, args.height // 4)  # Smaller: 1/5 width
+    _minimap_margin = 15
+    _minimap_scale = 12.0  # pixels per meter
+    _lights_found_history = []  # Track where lights were found
     for vf in range(n_frames):
         t_sim = (vf / args.fps) * args.speed
         flog_f = t_sim / sim_dt
@@ -321,76 +328,132 @@ def main():
         renderer.update_scene(data, camera=cam, scene_option=opt)
         pixels = renderer.render()
 
-        # --- Scent source markers (v0.4.8) ---
-        # Draw glowing circles at scent positions projected to screen.
-        # Uses the renderer's internal scene camera matrices for projection.
+        # --- Stats + Dashboard (scent circles DISABLED, minimap shows them) ---
         if dash:
             step = flog.get_step(i0)
             stats = dict(flog.get_stats_at_step(step))
+            creature_x, creature_y = float(qpos[0]), float(qpos[1])
+
+            # Targets found text (drawn directly on pixels)
             _scent_img = Image.fromarray(pixels)
             _scent_draw = ImageDraw.Draw(_scent_img)
-            creature_x, creature_y = float(qpos[0]), float(qpos[1])
-            az_rad = np.radians(args.azimuth)
-            for si in range(4):
-                sx = stats.get(f'scent_{si}_x', None)
-                sy = stats.get(f'scent_{si}_y', None)
-                if sx is None or sy is None:
-                    continue
-                rel_x = sx - creature_x
-                rel_y = sy - creature_y
-                dist_to_scent = np.sqrt(rel_x**2 + rel_y**2)
-                if dist_to_scent > 4.0:
-                    continue
-                # Project to screen: camera-relative coordinates
-                # Camera azimuth defines the view direction
-                # cam_right = perpendicular to view direction in ground plane
-                # cam_depth = along view direction (into screen)
-                cam_right_x = -np.sin(az_rad)
-                cam_right_y = np.cos(az_rad)
-                cam_depth_x = np.cos(az_rad)
-                cam_depth_y = np.sin(az_rad)
-                screen_x = rel_x * cam_right_x + rel_y * cam_right_y
-                screen_depth = rel_x * cam_depth_x + rel_y * cam_depth_y
-                # Perspective division
-                depth = args.distance - screen_depth
-                if depth < 0.1:
-                    continue
-                fov_scale = args.width / (2.0 * args.distance)
-                px = int(args.width * 0.37 + screen_x * fov_scale * (args.distance / depth))
-                py = int(args.height * 0.62 + screen_depth * fov_scale * 0.35)
-                if not (10 < px < args.width - 60 and 10 < py < args.height - 60):
-                    continue
-                # Glow size based on distance
-                r_outer = max(10, int(18 * max(0.2, 1.0 - dist_to_scent / 4.0)))
-                r_inner = max(3, r_outer // 3)
-                # Outer glow rings
-                for gr in range(r_outer, r_inner, -2):
-                    _scent_draw.ellipse(
-                        [px - gr, py - gr, px + gr, py + gr],
-                        outline=(0, 180, 220), width=2)
-                # Inner bright dot
-                _scent_draw.ellipse(
-                    [px - r_inner, py - r_inner, px + r_inner, py + r_inner],
-                    fill=(0, 255, 240))
-            # Scent found counter
             sf_count = int(stats.get('scents_found', 0))
             _sf_font = _load_font(max(28, int(36 * max(1.0, args.width / 1920.0))), bold=True)
             _scent_draw.text((20, 90), f'Targets found: {sf_count}',
                              fill=(0, 255, 220), font=_sf_font)
             pixels = np.array(_scent_img)
+
             live_dist = float(np.sqrt(qpos[0]**2 + qpos[1]**2)) if len(qpos) > 1 else 0.0
             stats['current_distance'] = live_dist
             if live_dist > stats.get('max_distance', 0.0):
                 stats['max_distance'] = live_dist
-            # Pass FLOG meta for dynamic header (creature name, version, scene)
             stats['creature'] = flog.meta.get('creature', 'freenove').capitalize()
-            stats['version'] = 'v0.4.8'  # Override FLOG meta (logged as v0.4.3)
+            stats['version'] = 'v0.4.8'
             stats['task'] = flog.meta.get('task', scene_text or 'flat')
             stats['total_steps'] = flog.meta.get('steps', 20000)
             cam_p = {'azimuth': args.azimuth, 'elevation': args.elevation,
                      'distance': args.distance,
                      'lookat': [float(qpos[0]), float(qpos[1]), float(qpos[2])]}
             pixels = dash.composite(pixels, stats, cam_p)
+
+        # --- Mini-Map Overlay (top-right corner) ---
+        creature_x = float(qpos[0])
+        creature_y = float(qpos[1])
+        _trail.append((creature_x, creature_y))
+        step = flog.get_step(i0)
+        stats_now = flog.get_stats_at_step(step) if not dash else stats
+
+        mm = _minimap_size
+        mm_img = Image.new('RGBA', (mm, mm), (10, 15, 10, 200))  # Semi-transparent dark
+        mm_draw = ImageDraw.Draw(mm_img)
+
+        # Draw border
+        mm_draw.rectangle([0, 0, mm-1, mm-1], outline=(0, 180, 220, 255), width=2)
+
+        # Center of minimap = robot position
+        cx, cy_map = creature_x, creature_y
+        s = _minimap_scale
+
+        def w2p(wx, wy):
+            """World coords to minimap pixel coords."""
+            px = int(mm / 2 + (wx - cx) * s)
+            py = int(mm / 2 - (wy - cy_map) * s)
+            return px, py
+
+        # Grid lines (1m spacing)
+        grid_col = (30, 45, 30, 100)
+        for gx in range(int(cx - mm / (2*s)) - 1, int(cx + mm / (2*s)) + 2):
+            px, _ = w2p(gx, cy_map)
+            if 0 < px < mm:
+                mm_draw.line([(px, 0), (px, mm)], fill=grid_col, width=1)
+        for gy in range(int(cy_map - mm / (2*s)) - 1, int(cy_map + mm / (2*s)) + 2):
+            _, py = w2p(cx, gy)
+            if 0 < py < mm:
+                mm_draw.line([(0, py), (mm, py)], fill=grid_col, width=1)
+
+        # Origin marker
+        ox, oy = w2p(0, 0)
+        if 5 < ox < mm-5 and 5 < oy < mm-5:
+            mm_draw.ellipse([ox-3, oy-3, ox+3, oy+3], fill=(100, 100, 100, 200))
+
+        # Trail
+        trail_step = max(1, len(_trail) // 500)  # Limit points
+        for ti in range(0, len(_trail) - 1, trail_step):
+            p1 = w2p(_trail[ti][0], _trail[ti][1])
+            p2 = w2p(_trail[min(ti + trail_step, len(_trail)-1)][0],
+                     _trail[min(ti + trail_step, len(_trail)-1)][1])
+            if (0 <= p1[0] < mm and 0 <= p1[1] < mm and
+                0 <= p2[0] < mm and 0 <= p2[1] < mm):
+                age = ti / max(1, len(_trail))
+                c = int(80 + 120 * age)
+                mm_draw.line([p1, p2], fill=(0, c, int(c*0.8), 200), width=2)
+
+        # Light/waypoint position
+        for si in range(4):
+            lx = stats_now.get(f'scent_{si}_x', None)
+            ly = stats_now.get(f'scent_{si}_y', None)
+            if lx is not None and ly is not None:
+                lpx, lpy = w2p(lx, ly)
+                if 5 < lpx < mm-5 and 5 < lpy < mm-5:
+                    # Glowing light circle — large and bright
+                    for r in range(20, 6, -2):
+                        alpha = int(40 + 30 * (20 - r) / 14)
+                        mm_draw.ellipse([lpx-r, lpy-r, lpx+r, lpy+r],
+                                        outline=(255, 240, 50, alpha), width=2)
+                    mm_draw.ellipse([lpx-6, lpy-6, lpx+6, lpy+6],
+                                    fill=(255, 255, 100, 255))
+                    mm_draw.ellipse([lpx-3, lpy-3, lpx+3, lpy+3],
+                                    fill=(255, 255, 255, 255))
+
+        # Robot position (arrow showing heading)
+        rpx, rpy = mm // 2, mm // 2  # Always centered
+        heading_val = float(qpos[3:7].tolist()[0]) if len(qpos) > 6 else 0
+        # Quaternion to yaw
+        qw, qx_h, qy_h, qz_h = float(qpos[3]), float(qpos[4]), float(qpos[5]), float(qpos[6])
+        yaw = np.arctan2(2.0 * (qw * qz_h + qx_h * qy_h), 1.0 - 2.0 * (qy_h**2 + qz_h**2))
+        arrow_len = 8
+        ax = rpx + int(arrow_len * np.cos(yaw))
+        ay = rpy - int(arrow_len * np.sin(yaw))
+        mm_draw.ellipse([rpx-4, rpy-4, rpx+4, rpy+4], fill=(0, 255, 100, 255))
+        mm_draw.line([(rpx, rpy), (ax, ay)], fill=(0, 255, 100, 255), width=2)
+
+        # Label
+        try:
+            _mm_font = _load_font(11)
+            sf_val = int(stats_now.get('scents_found', 0))
+            mm_draw.text((5, mm - 16), f'sf:{sf_val}  sm:{stats_now.get("smell_strength", 0):.2f}',
+                         fill=(0, 220, 200, 255), font=_mm_font)
+        except:
+            pass
+
+        # Composite minimap onto main frame (bottom-left, above status bar)
+        main_img = Image.fromarray(pixels)
+        mm_x = 12  # Aligned with status bar edge
+        mm_y = args.height - mm - 130  # Higher above the status bar
+        main_img.paste(mm_img, (mm_x, mm_y), mm_img)  # Use alpha
+        pixels = np.array(main_img)
+        main_img.close()
+        mm_img.close()
 
         ffmpeg.stdin.write(pixels.tobytes())
 

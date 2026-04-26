@@ -43,6 +43,7 @@ Author: MH-FLOCKE Level 15 v0.7.0
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+from collections import deque
 import time
 
 SPATIAL_MAP_VERSION = "v0.1.0"
@@ -103,7 +104,7 @@ class SpatialMap:
         self.visit_grid = np.zeros((grid_resolution, grid_resolution), dtype=np.float32)
 
         # Trail: recent positions for path visualization
-        self._trail: List[np.ndarray] = []
+        self._trail: deque = deque(maxlen=500)
         self._trail_max = 500   # Keep last 500 positions
         self._trail_interval = 20  # Record every 20 steps
 
@@ -161,8 +162,7 @@ class SpatialMap:
         # Record trail
         if self._step_count % self._trail_interval == 0:
             self._trail.append(self.position.copy())
-            if len(self._trail) > self._trail_max:
-                self._trail.pop(0)
+            # deque maxlen handles eviction automatically
 
         # Decay landmark confidence
         for lm in self.landmarks.values():

@@ -64,6 +64,8 @@ import logging
 import numpy as np
 import torch
 import mujoco
+from collections import deque
+import gc as _gc
 
 from src.body.genome import Genome
 from src.body.mujoco_creature import MuJoCoCreature, MuJoCoCreatureBuilder
@@ -80,6 +82,7 @@ from src.brain.directed_learning import DirectedLearning, DIRECTED_LEARNING_VERS
 from src.body.terrain import (
     TerrainConfig, generate_heightfield, inject_terrain, inject_terrain_geoms,
     terrain_type_from_scene, difficulty_from_scene, inject_ball, inject_wall,
+    inject_light,
 )
 
 logger = logging.getLogger(__name__)
@@ -385,6 +388,8 @@ def main():
     parser.add_argument('--no-llm', action='store_true')
     parser.add_argument('--no-drives', action='store_true', help='Disable autonomous drive loop')
     parser.add_argument('--no-sensory', action='store_true', help='Disable sensory environment (no scent/sound)')
+    parser.add_argument('--phototaxis', action='store_true',
+                        help='Use light-based navigation instead of scent (camera bilateral brightness)')
     parser.add_argument('--difficulty', type=float, default=None)
     parser.add_argument('--pci-interval', type=int, default=500)
     parser.add_argument('--resume', type=str, default=None)
@@ -514,6 +519,7 @@ def main():
 
     # Detect wall/obstacle scene (Issue #103: ultrasonic obstacle avoidance)
     _scene_has_wall = any(w in args.scene.lower() for w in ['wall', 'wand', 'obstacle', 'hindernis', 'barrier'])
+    _scene_has_light = getattr(args, 'phototaxis', False)  # Phototaxis: inject light source
     _wall_distance = 0.8  # meters from origin — close for fast episodic learning
     if 'far' in args.scene.lower() or 'weit' in args.scene.lower():
         _wall_distance = 1.5
@@ -527,7 +533,7 @@ def main():
         _pid = os.getpid()
         hfield_path = os.path.join('output', f'mhflocke_terrain_{_pid}.png')
         os.makedirs('output', exist_ok=True)
-        _needs_temp_xml = (terrain_cfg.terrain_type != 'flat') or _scene_has_ball or _scene_has_wall
+        _needs_temp_xml = (terrain_cfg.terrain_type != 'flat') or _scene_has_ball or _scene_has_wall or _scene_has_light
         if _needs_temp_xml:
             with open(xml_path, encoding='utf-8') as f:
                 xml_string = f.read()
@@ -542,6 +548,9 @@ def main():
                 print(f'  Ball: injected at {_init_ball} -- curriculum Stage 0')
             if _scene_has_wall:
                 xml_string = inject_wall(xml_string, distance=_wall_distance)
+            if _scene_has_light:
+                xml_string = inject_light(xml_string, pos=(2.0, 0.5, 0.02))
+                print(f'  Light: injected for phototaxis navigation')
             # Write temp file next to original (so <include> paths resolve)
             temp_xml = os.path.join(os.path.dirname(xml_path), f'_train_temp_{_pid}.xml')
             with open(temp_xml, 'w') as f:
@@ -581,6 +590,9 @@ def main():
             print(f'  Terrain: flat (no heightfield)')
         if _scene_has_wall:
             xml_string = inject_wall(xml_string, distance=_wall_distance)
+        if _scene_has_light:
+            xml_string = inject_light(xml_string, pos=(2.0, 0.5, 0.02))
+            print(f'  Light: injected for phototaxis navigation')
         creature = MuJoCoCreatureBuilder.build(genome, world=world, device=device,
             creature_name=args.creature_name.lower(), xml_string=xml_string,
             n_hidden_neurons=n_hidden,
@@ -801,41 +813,72 @@ def main():
 
     # --- Issue #75: Sensory Environment ---
     sensory_env = None
+    visual_env = None  # Phototaxis mode
     if drive_bridge and not args.no_sensory:
         try:
-            from src.body.sensory_environment import SensoryEnvironment, ScentSource
-            sensory_env = SensoryEnvironment(
-                world_size=10.0, seed=args.seed,
-                sound_interval=2000, sound_duration=500,
-            )
-            # Check if ball exists in scene
-            ball_id = mujoco.mj_name2id(world._model, mujoco.mjtObj.mjOBJ_BODY, 'ball')
-            if ball_id >= 0:
-                # Ball scene: set ball qpos explicitly (freejoint ignores XML body pos=)
-                ball_jnt_id = mujoco.mj_name2id(world._model, mujoco.mjtObj.mjOBJ_JOINT, 'ball_joint')
-                ball_qposadr = world._model.jnt_qposadr[ball_jnt_id]
-                ball_target = np.array(main._ball_positions[main._ball_stage])
-                world._data.qpos[ball_qposadr:ball_qposadr + 3] = ball_target
-                world._data.qpos[ball_qposadr + 3:ball_qposadr + 7] = [1.0, 0.0, 0.0, 0.0]
-                ball_dofadr = world._model.jnt_dofadr[ball_jnt_id]
-                world._data.qvel[ball_dofadr:ball_dofadr + 6] = 0.0
-                mujoco.mj_forward(world._model, world._data)
-                ball_xpos = world._data.xpos[ball_id].copy()
-                print(f'  Ball qpos set: target=({ball_target[0]:.1f}, {ball_target[1]:.1f}, {ball_target[2]:.2f})'
-                      f'  actual xpos=({ball_xpos[0]:.1f}, {ball_xpos[1]:.1f}, {ball_xpos[2]:.2f})')
-                # Ball as single scent source (visual salience proxy)
-                sensory_env._scents = [ScentSource(
-                    position=ball_xpos.copy(), strength=3.0, radius=1.5,  # 1.5m find radius (0.5 too tight)
-                    name='ball_scent', fixed=True
-                )]
-                creature._steer_gain = 0.15  # VOR uses this as base gain for motor corrections
-                print(f'  Sensory: BALL MODE -- target at ({ball_xpos[0]:.1f}, {ball_xpos[1]:.1f})')
+            if _scene_has_light:
+                # Phototaxis mode: VisualEnvironment with camera
+                from src.body.visual_environment import VisualEnvironment
+                visual_env = VisualEnvironment(
+                    world_size=10.0, seed=args.seed,
+                    cam_width=64, cam_height=48,
+                )
+                # Skip camera renderer in sim — use geometric fallback
+                # Camera is only needed on real hardware (cv2)
+                # visual_env.init_renderer(world._model, world._data)
+                visual_env.spawn_lights(count=1, min_dist=1.5, max_dist=3.0)
+                # Set light body position via qpos
+                light_id = mujoco.mj_name2id(world._model, mujoco.mjtObj.mjOBJ_BODY, 'light_target')
+                if light_id >= 0:
+                    light_jnt_id = mujoco.mj_name2id(world._model, mujoco.mjtObj.mjOBJ_JOINT, 'light_joint')
+                    light_qposadr = world._model.jnt_qposadr[light_jnt_id]
+                    light_pos = visual_env.get_light_positions()[0]
+                    world._data.qpos[light_qposadr:light_qposadr + 3] = light_pos
+                    world._data.qpos[light_qposadr + 3:light_qposadr + 7] = [1, 0, 0, 0]
+                    light_dofadr = world._model.jnt_dofadr[light_jnt_id]
+                    world._data.qvel[light_dofadr:light_dofadr + 6] = 0.0
+                    mujoco.mj_forward(world._model, world._data)
+                print(f'  Sensory: PHOTOTAXIS MODE — 1 light source, camera {64}x{48}')
+                # Cache MuJoCo IDs for light body (used every step)
+                _lt_body_id = mujoco.mj_name2id(world._model, mujoco.mjtObj.mjOBJ_BODY, 'light_target')
+                _lt_jnt_id = mujoco.mj_name2id(world._model, mujoco.mjtObj.mjOBJ_JOINT, 'light_joint')
+                if _lt_body_id >= 0 and _lt_jnt_id >= 0:
+                    _lt_qposadr = world._model.jnt_qposadr[_lt_jnt_id]
+                    _lt_dofadr = world._model.jnt_dofadr[_lt_jnt_id]
+                else:
+                    _lt_qposadr = -1
+                    _lt_dofadr = -1
             else:
-                # Normal scene: random scent sources for behavior motivation
-                # v0.4.6: closer (1-2m) for Baby-KI — baby can't walk far,
-                # needs reachable targets for scent reward to kick in
-                sensory_env.spawn_scent(count=2, min_dist=1.0, max_dist=2.0)
-                print(f'  Sensory: 2 scent sources (1-2m), sounds every ~2k steps')
+                from src.body.sensory_environment import SensoryEnvironment, ScentSource
+                sensory_env = SensoryEnvironment(
+                    world_size=10.0, seed=args.seed,
+                    sound_interval=2000, sound_duration=500,
+                )
+                # Check if ball exists in scene
+                ball_id = mujoco.mj_name2id(world._model, mujoco.mjtObj.mjOBJ_BODY, 'ball')
+                if ball_id >= 0:
+                    # Ball scene: set ball qpos explicitly (freejoint ignores XML body pos=)
+                    ball_jnt_id = mujoco.mj_name2id(world._model, mujoco.mjtObj.mjOBJ_JOINT, 'ball_joint')
+                    ball_qposadr = world._model.jnt_qposadr[ball_jnt_id]
+                    ball_target = np.array(main._ball_positions[main._ball_stage])
+                    world._data.qpos[ball_qposadr:ball_qposadr + 3] = ball_target
+                    world._data.qpos[ball_qposadr + 3:ball_qposadr + 7] = [1.0, 0.0, 0.0, 0.0]
+                    ball_dofadr = world._model.jnt_dofadr[ball_jnt_id]
+                    world._data.qvel[ball_dofadr:ball_dofadr + 6] = 0.0
+                    mujoco.mj_forward(world._model, world._data)
+                    ball_xpos = world._data.xpos[ball_id].copy()
+                    print(f'  Ball qpos set: target=({ball_target[0]:.1f}, {ball_target[1]:.1f}, {ball_target[2]:.2f})'
+                          f'  actual xpos=({ball_xpos[0]:.1f}, {ball_xpos[1]:.1f}, {ball_xpos[2]:.2f})')
+                    # Ball as single scent source (visual salience proxy)
+                    sensory_env._scents = [ScentSource(
+                        position=ball_xpos.copy(), strength=3.0, radius=1.5,
+                        name='ball_scent', fixed=True
+                    )]
+                    creature._steer_gain = 0.15
+                    print(f'  Sensory: BALL MODE -- target at ({ball_xpos[0]:.1f}, {ball_xpos[1]:.1f})')
+                else:
+                    sensory_env.spawn_scent(count=2, min_dist=1.0, max_dist=2.0)
+                    print(f'  Sensory: 2 scent sources (1-2m), sounds every ~2k steps')
         except Exception as e:
             print(f'  Sensory env: init failed ({e})')
             sensory_env = None
@@ -984,12 +1027,17 @@ def main():
 
     # Training Loop
     t_start = time.perf_counter()
+
+    # Step-time profiling (Issue: step-time explosion)
+    _profile = {'sensor': 0.0, 'sensory_env': 0.0, 'creature_step': 0.0,
+                'brain': 0.0, 'flog': 0.0, 'mujoco': 0.0, 'other': 0.0}
+    _profile_window = 1000
     max_dist = 0.0
     fall_count = 0
     recovery_count = 0
     best_upright_streak = 0
     current_upright_streak = 0
-    step_times = []
+    step_times = deque(maxlen=2000)  # Bounded — prevents O(N) growth over long runs
     last_pci = 0.0
     brain_result = {}
 
@@ -1098,6 +1146,7 @@ def main():
 
     for step in range(start_step, total_steps):
         t_step = time.perf_counter()
+        _tp0 = t_step  # profile marker
         sensor_data = {}
         try:
             sensor_data = world.get_sensor_data(creature.body_name)
@@ -1189,6 +1238,11 @@ def main():
         # Periodic analysis (every analysis_interval steps)
         if step % gait_cfg.analysis_interval == 0 and step > 0:
             gait_analyzer.analyze()
+            _gq = gait_analyzer.stats()
+            gait_analyzer._cached_gq = _gq.get('gait_quality', 0.5)
+            gait_analyzer._cached_per = _gq.get('gait_periodicity', 0.0)
+            gait_analyzer._cached_jit = _gq.get('gait_jitter', 0.0)
+            gait_analyzer._cached_hr = _gq.get('gait_height_ratio', 0.5)
 
         # Body Awareness: detect limb failure from proprioceptive feedback
         _ba_cmds = getattr(creature, '_last_controls', None)
@@ -1219,6 +1273,7 @@ def main():
         dev_schedule.set_competence(_motor_competence)
         dev_schedule.step(step, world, creature)
         sensor_data['forward_model_gain'] = dev_schedule.get_forward_model_gain(step)
+        _tp1 = time.perf_counter(); _profile['sensor'] += _tp1 - _tp0
 
         # --- Spatial Map: update position + observe landmarks ---
         _qw_sp, _qx_sp, _qy_sp, _qz_sp = world._data.qpos[3:7]
@@ -1237,7 +1292,61 @@ def main():
             spatial_map.observe_landmark('wall', _wall_rel_sp, category='obstacle', valence=-0.5)
 
         # --- Issue #75: Sensory environment ---
-        if sensory_env:
+        if visual_env:
+            # --- PHOTOTAXIS MODE ---
+            creature_pos = np.array([float(world._data.qpos[0]),
+                                     float(world._data.qpos[1]),
+                                     float(world._data.qpos[2])])
+            # Geometric gradient (no camera in sim — uses position math)
+            light_str, light_dir = visual_env.get_light_gradient(creature_pos)
+            sensor_data['smell_strength'] = light_str
+            sensor_data['smell_direction'] = float(np.arctan2(light_dir[1], light_dir[0]))
+            sensor_data['sound_intensity'] = 0.0
+            sensor_data['sound_direction'] = 0.0
+
+            # Check if creature reached a light source
+            _light_reached = visual_env.check_light_reached(creature_pos)
+            if _light_reached:
+                sensor_data['scent_reward'] = 0.5
+            # Sync light body position in MuJoCo every 10 steps (not every step)
+            if _lt_qposadr >= 0 and step % 10 == 0 and len(visual_env.get_light_positions()) > 0:
+                _lt_pos = visual_env.get_light_positions()[0]
+                world._data.qpos[_lt_qposadr:_lt_qposadr + 3] = _lt_pos
+                world._data.qpos[_lt_qposadr + 3:_lt_qposadr + 7] = [1, 0, 0, 0]
+                world._data.qvel[_lt_dofadr:_lt_dofadr + 6] = 0.0
+
+            # Phototactic steering
+            _qw_olf, _qx_olf, _qy_olf, _qz_olf = world._data.qpos[3:7]
+            heading = float(np.arctan2(2.0 * (_qw_olf * _qz_olf + _qx_olf * _qy_olf),
+                                       1.0 - 2.0 * (_qy_olf**2 + _qz_olf**2)))
+            _actor_comp = getattr(gate, 'actor_competence', 0.0)
+            if _actor_comp > 0.1 or step > 5000:
+                olf_steer = visual_env.get_phototactic_steering(
+                    creature_pos, heading)
+            else:
+                olf_steer = 0.0
+            sensor_data['olfactory_steering'] = olf_steer
+            sensor_data['scents_found'] = visual_env.lights_found
+
+            # Direct steering: treat light as visual target (like ball)
+            # This bypasses RT and drives CPG steering directly via VOR
+            if abs(olf_steer) > 0.05:
+                creature._ball_heading = olf_steer  # [-1, +1] steering signal
+                creature._ball_salience = sensor_data['smell_strength']
+            else:
+                creature._ball_heading = 0.0
+                creature._ball_salience = 0.0
+            # VOR: turn toward light (same as ball VOR in sensory_env block)
+            _cur_cpg_w = getattr(gate, 'cpg_weight', 0.9)
+            _vor_steer = vor.compute(
+                creature._ball_heading, creature._ball_salience,
+                upright, cpg_weight=_cur_cpg_w)
+            if cb:
+                _cb_mod = cb.inferior_olive.get_steering_gain_correction()
+                _vor_steer = _vor_steer * (1.0 + _cb_mod)
+            creature._steering_offset = _vor_steer
+
+        elif sensory_env:
             creature_pos = np.array([float(world._data.qpos[0]),
                                      float(world._data.qpos[1]),
                                      float(world._data.qpos[2])])
@@ -2026,6 +2135,8 @@ def main():
             elif hasattr(spinal_cpg, 'get_phase_input'):
                 creature._cpg_phase_input = spinal_cpg.get_phase_input()
 
+        _tp2 = time.perf_counter(); _profile['sensory_env'] += _tp2 - _tp1
+
         step_result = creature.step(
             reward_signal=learning_signal,
             extra_sensor_data={
@@ -2036,10 +2147,11 @@ def main():
                 'ball_distance': prev_ball_dist if prev_ball_dist is not None else 0.0,
                 'steering_offset': getattr(creature, '_steering_offset', 0.0),
                 # v0.7.0 Pillar 1-3: Body Awareness + Gait Quality + Spatial Map
-                'gait_quality': gait_analyzer.stats().get('gait_quality', 0.5),
-                'gait_periodicity': gait_analyzer.stats().get('gait_periodicity', 0.0),
-                'gait_jitter': gait_analyzer.stats().get('gait_jitter', 0.0),
-                'gait_height_ratio': gait_analyzer.stats().get('gait_height_ratio', 0.5),
+                # Cache stats — only recompute every 100 steps
+                'gait_quality': getattr(gait_analyzer, '_cached_gq', 0.5),
+                'gait_periodicity': getattr(gait_analyzer, '_cached_per', 0.0),
+                'gait_jitter': getattr(gait_analyzer, '_cached_jit', 0.0),
+                'gait_height_ratio': getattr(gait_analyzer, '_cached_hr', 0.5),
                 'limb_dead': body_awareness.get_dead_limbs(),
                 'limb_degraded': body_awareness.get_degraded_limbs(),
                 'ball_salience': getattr(creature, '_ball_salience', 0.0),
@@ -2058,6 +2170,7 @@ def main():
 
         # ================================================================
         # BABY-KI: Compute intrinsic reward for NEXT step's learning signal.
+        _tp3 = time.perf_counter(); _profile['creature_step'] += _tp3 - _tp2
         # process() has just populated vestibular_discomfort, curiosity,
         # empowerment, and proprioceptive_delta. Now compute the composite.
         # ================================================================
@@ -2100,8 +2213,7 @@ def main():
 
         # Memory management: periodic GC to clean up Python object cycles.
         if step % 5000 == 0 and step > 0:
-            import gc
-            gc.collect()
+            _gc.collect()
         brain_result = step_result.get('brain', {})
         pci_val = brain_result.get('pci', None)
         if pci_val is not None and pci_val > 0:
@@ -2145,8 +2257,24 @@ def main():
                 if reset_count <= 10 or reset_count % 10 == 0:
                     print(f'  [PROGRESS RESET #{reset_count} at step {step} — no dist gain for {_PROGRESS_STUCK_STEPS} steps, up={upright:.2f}]')
                 body_awareness.reset_after_physics_reset()  # v0.7.0: prevent false positives
+        _tp4 = time.perf_counter(); _profile['brain'] += _tp4 - _tp3
         step_dt = time.perf_counter() - t_step
         step_times.append(step_dt)
+
+        # Profiling report every 5000 steps
+        if step > 0 and step % 5000 == 0:
+            total_prof = sum(_profile.values())
+            if total_prof > 0:
+                print(f'  [PROFILE step {step}] sensor:{_profile["sensor"]*1000/5000:.1f}ms  '
+                      f'sensory:{_profile["sensory_env"]*1000/5000:.1f}ms  '
+                      f'creature:{_profile["creature_step"]*1000/5000:.1f}ms  '
+                      f'brain:{_profile["brain"]*1000/5000:.1f}ms  '
+                      f'total:{total_prof*1000/5000:.1f}ms/step')
+            _profile = {k: 0.0 for k in _profile}
+
+        # GC every 2000 steps to prevent PyTorch memory fragmentation
+        if step > 0 and step % 2000 == 0:
+            _gc.collect()
 
         if recorder and step % 10 == 0:
             try:
@@ -2247,12 +2375,12 @@ def main():
                 flog_data['learning_signal'] = learning_signal
                 flog_data['reward_blend'] = _blend
                 # Issue #75: Sensory environment
-                if sensory_env:
+                if sensory_env or visual_env:
                     flog_data['smell_strength'] = sensor_data.get('smell_strength', 0.0)
                     flog_data['smell_direction'] = sensor_data.get('smell_direction', 0.0)
                     flog_data['sound_intensity'] = sensor_data.get('sound_intensity', 0.0)
                     flog_data['sound_direction'] = sensor_data.get('sound_direction', 0.0)
-                    flog_data['scents_found'] = sensory_env.scents_found
+                    flog_data['scents_found'] = visual_env.lights_found if visual_env else sensory_env.scents_found
                     flog_data['olfactory_steering'] = sensor_data.get('olfactory_steering', 0.0)
                     # Run-and-Tumble state machine (v0.4.8)
                     flog_data['rt_state'] = _RT_STATE
@@ -2283,10 +2411,15 @@ def main():
                         flog_data['nav_cf'] = fm_stats.get('navigation_cf', 0.0)
                         flog_data['cb_steer_correction'] = fm_stats.get('steering_gain_correction', 0.0)
                         flog_data['cb_heading_gain'] = fm_stats.get('heading_gain', 0.0)
-                    # Scent source positions for video rendering
-                    for si, sc in enumerate(sensory_env._scents):
-                        flog_data[f'scent_{si}_x'] = float(sc.position[0])
-                        flog_data[f'scent_{si}_y'] = float(sc.position[1])
+                    # Scent/light source positions for video rendering
+                    if sensory_env:
+                        for si, sc in enumerate(sensory_env._scents):
+                            flog_data[f'scent_{si}_x'] = float(sc.position[0])
+                            flog_data[f'scent_{si}_y'] = float(sc.position[1])
+                    elif visual_env:
+                        for si, lp in enumerate(visual_env.get_light_positions()):
+                            flog_data[f'scent_{si}_x'] = float(lp[0])
+                            flog_data[f'scent_{si}_y'] = float(lp[1])
                 # Issue #121: Extended sensor data for analysis
                 # Obstacle distance (HC-SR04 / MuJoCo rangefinder)
                 flog_data['obstacle_distance'] = float(sensor_data.get('obstacle_distance', -1.0))
@@ -2347,7 +2480,7 @@ def main():
                     print(f'  ⚠ FLOG stats write failed at step {step}: {e}')
 
         if step > 0 and step % log_every == 0:
-            avg_ms = np.mean(step_times[-log_every:]) * 1000
+            avg_ms = np.mean(list(step_times)[-log_every:]) * 1000
             eta_min = (total_steps - step) * (avg_ms / 1000) / 60
             line1 = (f'  {step:>7,}/{total_steps:,}  dist:{max_dist:>5.2f}m  x:{cur_x:.2f}'
                      f'  vel:{vel_mps:.3f}m/s'
@@ -2403,9 +2536,9 @@ def main():
             if _dead:
                 line3 += f'  DEAD:{",".join(_dead)}'
             # Issue #75: sensory info
-            if sensory_env:
+            if sensory_env or visual_env:
                 sm = sensor_data.get('smell_strength', 0.0)
-                sf = sensory_env.scents_found
+                sf = visual_env.lights_found if visual_env else sensory_env.scents_found
                 line3 += f'  sm:{sm:.2f}  sf:{sf}  RT:{_RT_STATE[0]}({_RT_TIMER})'
                 bh = getattr(creature, '_ball_heading', 0.0)
                 bs = getattr(creature, '_ball_salience', 0.0)

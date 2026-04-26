@@ -282,11 +282,13 @@ class CognitiveBrain:
                 training loop (smell_strength, scent_reward, etc.) that is
                 not available in raw MuJoCo sensors. Passed to Drives.
         """
-        sensor_t = torch.tensor(sensor_values, dtype=torch.float32,
-                                device=self.device) if not isinstance(
-                                    sensor_values, torch.Tensor) else sensor_values
-        motor_t = torch.tensor(controls, dtype=torch.float32,
-                               device=self.device)
+        if not hasattr(self, '_sensor_buf'):
+            self._sensor_buf = torch.zeros(len(sensor_values), dtype=torch.float32, device=self.device)
+            self._motor_buf = torch.zeros(len(controls), dtype=torch.float32, device=self.device)
+        self._sensor_buf[:len(sensor_values)] = torch.as_tensor(sensor_values, dtype=torch.float32)
+        self._motor_buf[:len(controls)] = torch.as_tensor(controls, dtype=torch.float32)
+        sensor_t = self._sensor_buf[:len(sensor_values)]
+        motor_t = self._motor_buf[:len(controls)]
         raw_sensors = list(sensor_values) if not isinstance(sensor_values, list) else sensor_values
 
         # ============================================================
@@ -843,10 +845,63 @@ class CognitiveBrain:
             self._arousal_oscillator = max(0.05, min(1.0, self._arousal_oscillator))
 
         # State Update
-        self._last_sensor = sensor_t.detach().clone()
-        self._last_motor = motor_t.detach().clone()
+        # State Update — in-place copy instead of clone (avoids tensor allocation)
+        if self._last_sensor is None:
+            self._last_sensor = sensor_t.detach().clone()
+            self._last_motor = motor_t.detach().clone()
+        else:
+            self._last_sensor.copy_(sensor_t.detach())
+            self._last_motor.copy_(motor_t.detach())
         self._last_raw_sensors = raw_sensors
         self._step_count += 1
+
+        # Fine-grained profiling (every 5000 steps)
+        if self._step_count % 5000 == 0:
+            import time as _t
+            _timers = {}
+            _t0 = _t.perf_counter()
+            _ = self.body_schema.update(motor_command=controls, current_sensors=raw_sensors, previous_sensors=self._last_raw_sensors)
+            _timers['body_schema'] = _t.perf_counter() - _t0
+            _t0 = _t.perf_counter()
+            if self._last_sensor is not None:
+                _ = self.world_model.train_step(self._last_sensor[:self.n_sensor_channels], self._last_motor[:self.n_motors], sensor_t[:self.n_sensor_channels])
+            _timers['world_model'] = _t.perf_counter() - _t0
+            _t0 = _t.perf_counter()
+            _ = self.emotions.update(sensor_data=sensor_data, prediction_error=prediction_error, reward=external_reward, is_fallen=is_fallen, extra_data=extra_sensor_data)
+            _timers['emotions'] = _t.perf_counter() - _t0
+            _t0 = _t.perf_counter()
+            self.memory.record_step(sensors=raw_sensors, motors=controls, reward=external_reward, valence=emotional_state.valence, arousal=emotional_state.arousal)
+            _timers['memory'] = _t.perf_counter() - _t0
+            _t0 = _t.perf_counter()
+            _ = self.snn.apply_rstdp(reward_signal=combined_reward, prediction_error=prediction_error)
+            _timers['rstdp'] = _t.perf_counter() - _t0
+            _t0 = _t.perf_counter()
+            self._hebbian_step()
+            _timers['hebbian'] = _t.perf_counter() - _t0
+            _t0 = _t.perf_counter()
+            _ = self.gwt.step(signals)
+            _timers['gwt'] = _t.perf_counter() - _t0
+            _t0 = _t.perf_counter()
+            _ = self.drives.compute_drive_strengths({'upright': 0.5, 'height': 0.5, 'prediction_error': 0.0, 'energy_spent': 0.0, 'is_fallen': False, 'learning_progress': 0.0, 'smell_strength': 0.0, 'scent_reward': 0.0, 'gait_quality': 0.5, 'limb_dead': [], 'limb_degraded': [], 'spatial_explored': 0.0, 'ball_salience': 0.0})
+            _timers['drives'] = _t.perf_counter() - _t0
+            _t0 = _t.perf_counter()
+            _ = self.metacognition.assess_situation(prediction_error=0.0, body_anomaly=0.0, body_confidence=0.0, fitness=0.0, n_episodes=0, behavior_count=3, skill_count=0, modules_active={})
+            _timers['metacog'] = _t.perf_counter() - _t0
+            _t0 = _t.perf_counter()
+            _ = self.consistency.check(prediction_error=0.0, body_anomaly=0.0, memory_mismatch=0.0)
+            _timers['consistency'] = _t.perf_counter() - _t0
+            _t0 = _t.perf_counter()
+            self.synaptogenesis.observe_spikes(self.snn.spikes)
+            _timers['synaptogenesis'] = _t.perf_counter() - _t0
+            _t0 = _t.perf_counter()
+            spikes_np = self.snn.spikes.cpu().numpy()
+            self.astrocytes.update(spikes_np, dt=1.0)
+            _timers['astrocytes'] = _t.perf_counter() - _t0
+            _t0 = _t.perf_counter()
+            self.dream_engine.record_experience(sensor_t, motor_t, combined_reward)
+            _timers['dream_rec'] = _t.perf_counter() - _t0
+            parts = '  '.join(f'{k}:{v*1000:.1f}ms' for k, v in sorted(_timers.items(), key=lambda x: -x[1]))
+            print(f'  [BRAIN PROFILE step {self._step_count}] {parts}')
 
         return {
             'combined_reward': combined_reward,

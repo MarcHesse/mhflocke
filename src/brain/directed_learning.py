@@ -31,6 +31,7 @@ Author: MH-FLOCKE Level 15 v0.7.0
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+from collections import deque
 import time
 
 DIRECTED_LEARNING_VERSION = "v0.1.0"
@@ -97,7 +98,7 @@ class DirectedLearning:
         self.max_memory = max_memory
 
         # Adaptation memory: what worked, what didn't
-        self.memory: List[Adaptation] = []
+        self.memory: deque = deque(maxlen=50)  # Bounded adaptation memory
 
         # Current hypothesis being tested
         self._current_hypothesis: Optional[Hypothesis] = None
@@ -358,16 +359,8 @@ class DirectedLearning:
                 cpg._leg_amplitude_scale = [1.0, 1.0, 1.0, 1.0]
 
     def _remember(self, adaptation: Adaptation) -> None:
-        """Store adaptation in memory."""
+        """Store adaptation in memory (deque maxlen=50 auto-evicts oldest)."""
         self.memory.append(adaptation)
-        if len(self.memory) > self.max_memory:
-            # Remove oldest unsuccessful adaptation
-            for i, m in enumerate(self.memory):
-                if not m.successful:
-                    self.memory.pop(i)
-                    break
-            else:
-                self.memory.pop(0)
 
     def _get_context(self, dead_limbs: List[str], obstacle_hits: int = 0) -> str:
         """Context string for grouping adaptations."""
