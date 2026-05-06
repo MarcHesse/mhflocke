@@ -364,30 +364,46 @@ def main():
         stats_now = flog.get_stats_at_step(step) if not dash else stats
 
         mm = _minimap_size
-        mm_img = Image.new('RGBA', (mm, mm), (10, 15, 10, 200))  # Semi-transparent dark
+        mm_img = Image.new('RGBA', (mm, mm), (10, 15, 10, 200))
         mm_draw = ImageDraw.Draw(mm_img)
-
-        # Draw border
         mm_draw.rectangle([0, 0, mm-1, mm-1], outline=(0, 180, 220, 255), width=2)
 
-        # Center of minimap = robot position
-        cx, cy_map = creature_x, creature_y
-        s = _minimap_scale
+        # World-centered minimap: auto-zoom to fit trail + light + margin
+        # Compute bounding box of all relevant points
+        _all_x = [t[0] for t in _trail] + [0.0]  # include origin
+        _all_y = [t[1] for t in _trail] + [0.0]
+        # Add light positions
+        for si in range(4):
+            _lx = stats_now.get(f'scent_{si}_x', None)
+            _ly = stats_now.get(f'scent_{si}_y', None)
+            if _lx is not None and _ly is not None:
+                _all_x.append(float(_lx))
+                _all_y.append(float(_ly))
+        _bbox_min_x = min(_all_x) - 0.5
+        _bbox_max_x = max(_all_x) + 0.5
+        _bbox_min_y = min(_all_y) - 0.5
+        _bbox_max_y = max(_all_y) + 0.5
+        _bbox_w = max(2.0, _bbox_max_x - _bbox_min_x)
+        _bbox_h = max(2.0, _bbox_max_y - _bbox_min_y)
+        _bbox_span = max(_bbox_w, _bbox_h)
+        _bbox_cx = (_bbox_min_x + _bbox_max_x) / 2
+        _bbox_cy = (_bbox_min_y + _bbox_max_y) / 2
+        s = (mm - 20) / _bbox_span  # auto-zoom with 10px margin
 
         def w2p(wx, wy):
-            """World coords to minimap pixel coords."""
-            px = int(mm / 2 + (wx - cx) * s)
-            py = int(mm / 2 - (wy - cy_map) * s)
+            """World coords to minimap pixel coords (world-centered)."""
+            px = int(mm / 2 + (wx - _bbox_cx) * s)
+            py = int(mm / 2 - (wy - _bbox_cy) * s)
             return px, py
 
         # Grid lines (1m spacing)
         grid_col = (30, 45, 30, 100)
-        for gx in range(int(cx - mm / (2*s)) - 1, int(cx + mm / (2*s)) + 2):
-            px, _ = w2p(gx, cy_map)
+        for gx in range(int(_bbox_min_x) - 1, int(_bbox_max_x) + 2):
+            px, _ = w2p(gx, _bbox_cy)
             if 0 < px < mm:
                 mm_draw.line([(px, 0), (px, mm)], fill=grid_col, width=1)
-        for gy in range(int(cy_map - mm / (2*s)) - 1, int(cy_map + mm / (2*s)) + 2):
-            _, py = w2p(cx, gy)
+        for gy in range(int(_bbox_min_y) - 1, int(_bbox_max_y) + 2):
+            _, py = w2p(_bbox_cx, gy)
             if 0 < py < mm:
                 mm_draw.line([(0, py), (mm, py)], fill=grid_col, width=1)
 
@@ -408,34 +424,51 @@ def main():
                 c = int(80 + 120 * age)
                 mm_draw.line([p1, p2], fill=(0, c, int(c*0.8), 200), width=2)
 
-        # Light/waypoint position
+        # Light/waypoint position with reach radius
+        _LIGHT_REACH_RADIUS = 2.0  # meters — same as LightSource.radius in visual_environment.py
         for si in range(4):
             lx = stats_now.get(f'scent_{si}_x', None)
             ly = stats_now.get(f'scent_{si}_y', None)
             if lx is not None and ly is not None:
                 lpx, lpy = w2p(lx, ly)
+                # Reach radius circle — shows when "found" triggers
+                _reach_px = int(_LIGHT_REACH_RADIUS * s)
+                if _reach_px > 2:
+                    mm_draw.ellipse([lpx-_reach_px, lpy-_reach_px, lpx+_reach_px, lpy+_reach_px],
+                                    outline=(255, 240, 50, 80), width=1)
+                # Light center glow
                 if 5 < lpx < mm-5 and 5 < lpy < mm-5:
-                    # Glowing light circle — large and bright
-                    for r in range(20, 6, -2):
-                        alpha = int(40 + 30 * (20 - r) / 14)
+                    for r in range(12, 4, -2):
+                        alpha = int(30 + 30 * (12 - r) / 8)
                         mm_draw.ellipse([lpx-r, lpy-r, lpx+r, lpy+r],
                                         outline=(255, 240, 50, alpha), width=2)
-                    mm_draw.ellipse([lpx-6, lpy-6, lpx+6, lpy+6],
+                    mm_draw.ellipse([lpx-4, lpy-4, lpx+4, lpy+4],
                                     fill=(255, 255, 100, 255))
-                    mm_draw.ellipse([lpx-3, lpy-3, lpx+3, lpy+3],
+                    mm_draw.ellipse([lpx-2, lpy-2, lpx+2, lpy+2],
                                     fill=(255, 255, 255, 255))
 
-        # Robot position (arrow showing heading)
-        rpx, rpy = mm // 2, mm // 2  # Always centered
-        heading_val = float(qpos[3:7].tolist()[0]) if len(qpos) > 6 else 0
-        # Quaternion to yaw
+        # Robot position (arrow showing heading) — at actual world position
+        rpx, rpy = w2p(creature_x, creature_y)
         qw, qx_h, qy_h, qz_h = float(qpos[3]), float(qpos[4]), float(qpos[5]), float(qpos[6])
         yaw = np.arctan2(2.0 * (qw * qz_h + qx_h * qy_h), 1.0 - 2.0 * (qy_h**2 + qz_h**2))
         arrow_len = 8
         ax = rpx + int(arrow_len * np.cos(yaw))
         ay = rpy - int(arrow_len * np.sin(yaw))
-        mm_draw.ellipse([rpx-4, rpy-4, rpx+4, rpy+4], fill=(0, 255, 100, 255))
-        mm_draw.line([(rpx, rpy), (ax, ay)], fill=(0, 255, 100, 255), width=2)
+        if 4 < rpx < mm-4 and 4 < rpy < mm-4:
+            mm_draw.ellipse([rpx-4, rpy-4, rpx+4, rpy+4], fill=(0, 255, 100, 255))
+            mm_draw.line([(rpx, rpy), (ax, ay)], fill=(0, 255, 100, 255), width=2)
+
+        # Intent arrow (steering direction)
+        _intent_yaw_rate = stats_now.get('intent_yaw_rate', 0.0)
+        if abs(_intent_yaw_rate) > 0.01 and 4 < rpx < mm-4 and 4 < rpy < mm-4:
+            intent_yaw = yaw - _intent_yaw_rate * 2.0
+            intent_len = min(18, 8 + abs(_intent_yaw_rate) * 30)
+            ix = rpx + int(intent_len * np.cos(intent_yaw))
+            iy = rpy - int(intent_len * np.sin(intent_yaw))
+            _intent_r = min(255, 200 + int(abs(_intent_yaw_rate) * 200))
+            _intent_g = max(50, 180 - int(abs(_intent_yaw_rate) * 300))
+            mm_draw.line([(rpx, rpy), (ix, iy)], fill=(_intent_r, _intent_g, 0, 220), width=2)
+            mm_draw.ellipse([ix-2, iy-2, ix+2, iy+2], fill=(_intent_r, _intent_g, 0, 220))
 
         # Label
         try:
@@ -443,6 +476,9 @@ def main():
             sf_val = int(stats_now.get('scents_found', 0))
             mm_draw.text((5, mm - 16), f'sf:{sf_val}  sm:{stats_now.get("smell_strength", 0):.2f}',
                          fill=(0, 220, 200, 255), font=_mm_font)
+            # Map 1 title
+            _mm_title_font = _load_font(10)
+            mm_draw.text((5, 3), 'WORLD', fill=(0, 220, 200, 200), font=_mm_title_font)
         except:
             pass
 
@@ -451,6 +487,124 @@ def main():
         mm_x = 12  # Aligned with status bar edge
         mm_y = args.height - mm - 130  # Higher above the status bar
         main_img.paste(mm_img, (mm_x, mm_y), mm_img)  # Use alpha
+
+        # === Map 2: Brain minimap (SpatialMap dead-reckoned view) ===
+        # Shows what the brain BELIEVES: dead-reckoned position, visit grid, landmarks
+        bm_img = Image.new('RGBA', (mm, mm), (10, 10, 15, 200))
+        bm_draw = ImageDraw.Draw(bm_img)
+        bm_draw.rectangle([0, 0, mm-1, mm-1], outline=(180, 100, 220, 255), width=2)
+
+        # Brain position from FLOG stats
+        _brain_x = stats_now.get('brain_pos_x', None)
+        _brain_y = stats_now.get('brain_pos_y', None)
+        _spatial_x = stats_now.get('spatial_x', _brain_x)
+        _spatial_y = stats_now.get('spatial_y', _brain_y)
+
+        if _spatial_x is not None and _spatial_y is not None:
+            # Use same world-centered bbox as WORLD map for consistency
+            def b2p(wx, wy):
+                """Brain world coords to brain minimap pixel coords (world-centered)."""
+                px = int(mm / 2 + (wx - _bbox_cx) * s)
+                py = int(mm / 2 - (wy - _bbox_cy) * s)
+                return px, py
+
+            # Visit grid from FLOG: base64-encoded uint8 array
+            # FLOG keys: brain_visit_grid_b64 (base64 string), brain_grid_shape ([rows, cols])
+            _vg_b64 = stats_now.get('brain_visit_grid_b64', None)
+            _vg_shape = stats_now.get('brain_grid_shape', None)
+            if _vg_b64 and _vg_shape:
+                try:
+                    import base64
+                    _vg_bytes = base64.b64decode(_vg_b64)
+                    _vg = np.frombuffer(_vg_bytes, dtype=np.uint8).reshape(_vg_shape)
+                    _grid_res = _vg.shape[0]
+                    _world_size = 10.0  # SpatialMap default
+                    _cell_size = _world_size / _grid_res
+                    for gx_i in range(_grid_res):
+                        for gy_i in range(_grid_res):
+                            if _vg[gx_i, gy_i] > 0:
+                                _gcx = (gx_i + 0.5) * _cell_size - _world_size / 2
+                                _gcy = (gy_i + 0.5) * _cell_size - _world_size / 2
+                                _gp = b2p(_gcx, _gcy)
+                                _gs = max(1, int(_cell_size * s / 2))
+                                if 0 < _gp[0] < mm and 0 < _gp[1] < mm:
+                                    _vc = int(40 + min(10, int(_vg[gx_i, gy_i])) * 15)
+                                    bm_draw.rectangle([_gp[0]-_gs, _gp[1]-_gs, _gp[0]+_gs, _gp[1]+_gs],
+                                                      fill=(0, _vc, int(_vc * 0.4), 120))
+                except Exception as _vg_err:
+                    pass  # Silently skip if grid decode fails
+
+            # Landmarks from FLOG: JSON string with array of landmark dicts
+            # FLOG key: brain_landmarks_json (string)
+            # Each entry: {name, x, y, cat, conf, val, visits, last_seen}
+            _lm_json = stats_now.get('brain_landmarks_json', None)
+            if _lm_json:
+                try:
+                    _landmarks = json.loads(_lm_json) if isinstance(_lm_json, str) else _lm_json
+                    for _lm in _landmarks:
+                        _lmx = _lm.get('x', None)
+                        _lmy = _lm.get('y', None)
+                        if _lmx is not None and _lmy is not None:
+                            _lmp = b2p(float(_lmx), float(_lmy))
+                            if 5 < _lmp[0] < mm-5 and 5 < _lmp[1] < mm-5:
+                                _lm_cat = _lm.get('cat', 'unknown')
+                                _lm_name = _lm.get('name', '')
+                                if _lm_cat == 'goal' or 'light' in str(_lm_name):
+                                    bm_draw.ellipse([_lmp[0]-5, _lmp[1]-5, _lmp[0]+5, _lmp[1]+5],
+                                                    fill=(255, 220, 50, 200))
+                                elif _lm_cat == 'obstacle':
+                                    bm_draw.ellipse([_lmp[0]-4, _lmp[1]-4, _lmp[0]+4, _lmp[1]+4],
+                                                    fill=(255, 60, 60, 200))
+                                else:
+                                    bm_draw.ellipse([_lmp[0]-3, _lmp[1]-3, _lmp[0]+3, _lmp[1]+3],
+                                                    fill=(150, 150, 220, 180))
+                except Exception as _lm_err:
+                    pass  # Silently skip if landmark parse fails
+
+            # Brain origin (home)
+            _bo = b2p(0, 0)
+            if 5 < _bo[0] < mm-5 and 5 < _bo[1] < mm-5:
+                bm_draw.ellipse([_bo[0]-3, _bo[1]-3, _bo[0]+3, _bo[1]+3],
+                                fill=(100, 100, 100, 200))
+                bm_draw.text((_bo[0]+5, _bo[1]-6), 'H', fill=(100, 100, 100, 200))
+
+            # Brain position (purple dot + heading arrow) at dead-reckoned pos
+            bpx, bpy = b2p(float(_spatial_x), float(_spatial_y))
+            if 4 < bpx < mm-4 and 4 < bpy < mm-4:
+                bm_draw.ellipse([bpx-4, bpy-4, bpx+4, bpy+4], fill=(180, 100, 255, 255))
+                bax = bpx + int(arrow_len * np.cos(yaw))
+                bay = bpy - int(arrow_len * np.sin(yaw))
+                bm_draw.line([(bpx, bpy), (bax, bay)], fill=(180, 100, 255, 255), width=2)
+
+            # Position error label
+            _pos_err = stats_now.get('brain_pos_error', None)
+            if _pos_err is not None:
+                try:
+                    _bm_font = _load_font(11)
+                    bm_draw.text((5, mm - 16), f'err:{float(_pos_err):.2f}m',
+                                 fill=(180, 100, 255, 200), font=_bm_font)
+                except:
+                    pass
+        else:
+            # No spatial data — show placeholder
+            try:
+                _bm_font = _load_font(11)
+                bm_draw.text((mm//4, mm//2), 'no spatial', fill=(100, 100, 100, 200), font=_bm_font)
+            except:
+                pass
+
+        # Brain map title
+        try:
+            _bm_title_font = _load_font(10)
+            bm_draw.text((5, 3), 'BRAIN', fill=(180, 100, 255, 200), font=_bm_title_font)
+        except:
+            pass
+
+        # Composite brain minimap right next to Map 1
+        bm_x = mm_x + mm + 8  # 8px gap between maps
+        bm_y = mm_y  # Same vertical position
+        main_img.paste(bm_img, (bm_x, bm_y), bm_img)
+        bm_img.close()
         pixels = np.array(main_img)
         main_img.close()
         mm_img.close()

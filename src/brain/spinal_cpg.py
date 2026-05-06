@@ -1,7 +1,14 @@
 """
-MH-FLOCKE — Spinal CPG v0.4.1
+MH-FLOCKE -- Spinal CPG v0.5.0
 ========================================
-Innate rhythmic locomotion patterns — genetically encoded, not learned.
+Innate rhythmic locomotion patterns -- genetically encoded, not learned.
+
+v0.5.0: Steering changed from abduction-offset to asymmetric hip amplitude.
+        Hardware tests (Test B/C, 2026-05-03) proved that abduction-offset
+        is too weak to overcome mechanical drift on Freenove. Asymmetric
+        stride (differential hip amplitude) produces 3x stronger turning.
+        Biology: Grillner 2003 (lamprey), Ijspeert 2008 (salamander) --
+        reticulospinal neurons modulate left/right stride amplitude.
 """
 
 import numpy as np
@@ -13,14 +20,14 @@ from typing import List, Optional
 class SpinalCPGConfig:
     """Configuration for the innate spinal CPG."""
     # Gait timing
-    frequency: float = 1.0          # Hz — slow walk (newborn)
+    frequency: float = 1.0          # Hz -- slow walk (newborn)
     phase_offsets: List[float] = field(
         default_factory=lambda: [0.0, 0.5, 0.75, 0.25])  # Walk gait
 
     # Per-joint amplitudes (fraction of ctrl range)
-    # These are the innate "wiring strengths" — not learned
+    # These are the innate "wiring strengths" -- not learned
     abd_amplitude: float = 0.05     # Lateral sway for balance
-    hip_amplitude: float = 0.35     # Main swing joint — needs to overcome inertia
+    hip_amplitude: float = 0.35     # Main swing joint -- needs to overcome inertia
     knee_amplitude: float = 0.25    # Flex/extend for ground clearance
     ankle_amplitude: float = 0.15   # Push-off
 
@@ -29,7 +36,7 @@ class SpinalCPGConfig:
     swing_power: float = 0.8        # Lighter during leg lift
 
     # Phase relationships within leg
-    knee_phase_offset: float = 0.25   # Knee leads hip by ~90° (π/2)
+    knee_phase_offset: float = 0.25   # Knee leads hip by ~90deg
     ankle_phase_offset: float = 0.4   # Ankle lags knee
 
     # Overall amplitude modulation
@@ -42,7 +49,7 @@ class SpinalCPGConfig:
     # CPG weight in motor blend (rest is cerebellum)
     cpg_weight_start: float = 0.8   # 80% CPG at birth
     cpg_weight_end: float = 0.2     # 20% CPG after maturation (cerebellum takes over)
-    cpg_weight_fade_steps: int = 200000  # Slow fade — cerebellum needs time to learn
+    cpg_weight_fade_steps: int = 200000  # Slow fade -- cerebellum needs time to learn
 
 
 class SpinalCPG:
@@ -63,7 +70,7 @@ class SpinalCPG:
         self.n_legs = 4
         self.jpleg = joints_per_leg  # abd, hip, knee, ankle
 
-        # Phase state (continuous, wraps at 2π)
+        # Phase state (continuous, wraps at 2pi)
         self._phases = np.array(self.config.phase_offsets) * 2 * np.pi
         self._step = 0
 
@@ -115,10 +122,12 @@ class SpinalCPG:
             arousal: 0-1, modulates amplitude (NE level, excitement)
             freq_scale: BehaviorPlanner frequency multiplier (1.0=walk, 1.4=trot)
             amp_scale: BehaviorPlanner amplitude multiplier (1.0=normal, 0.0=rest)
-            steering: -1..+1, asymmetric amplitude for turning. Positive = turn right.
-                Biology: Reticulospinal neurons modulate left/right CPG amplitude
-                asymmetrically. Longer stride on outside, shorter on inside.
+            steering: -1..+1, asymmetric stride for turning. Positive = turn right.
+                Biology: Reticulospinal neurons modulate left/right hip amplitude
+                asymmetrically. Shorter stride on inside, longer on outside.
                 Ref: Grillner 2003 (lamprey turning), Rybak 2006 (left-right coupling)
+                Hardware-validated: Test C (2026-05-03) confirmed asymmetric stride
+                is 3x more effective than abduction-offset for Freenove steering.
             
         Returns:
             np.ndarray of shape (n_actuators,) with values in [-1, 1]
@@ -126,7 +135,7 @@ class SpinalCPG:
         cfg = self.config
         self._step += 1
 
-        # Phase advance — modulated by behavior frequency scale
+        # Phase advance -- modulated by behavior frequency scale
         d_phase = 2 * np.pi * cfg.frequency * freq_scale * dt
         self._phases += d_phase
 
@@ -140,18 +149,20 @@ class SpinalCPG:
         # Behavior amplitude modulation
         amplitude *= amp_scale
 
-        # --- Asymmetric ABDUCTION for turning (Issue #76d) ---
-        # Biology: Reticulospinal projection modulates left/right abduction
-        # asymmetrically. This produces body ROTATION, not lateral tilt.
-        # Key insight: scaling ALL joint amplitudes causes lateral tipping
-        # (the creature leans sideways instead of turning). Only abduction
-        # asymmetry produces actual yaw rotation on flat ground.
-        # Ref: Grillner 2003 (lamprey turning), Ijspeert 2008 (salamander)
+        # --- Asymmetric HIP AMPLITUDE for turning (v0.5.0) ---
+        # Biology: Reticulospinal projection modulates left/right stride
+        # amplitude asymmetrically. Shorter stride on the inside of the
+        # curve, longer on the outside. This is differential/tank steering.
         #
-        # Positive steering = turn right:
-        #   Left legs get positive abduction offset (push body right)
-        #   Right legs get negative abduction offset (pull body right)
-        #   Hip/knee amplitudes stay SYMMETRIC (stable gait preserved)
+        # Hardware test results (2026-05-03):
+        #   Abduction-offset (old): Z=+/-5mm -> ~5 deg difference in 45s (useless)
+        #   Asymmetric stride (new): stride_L/R ratio -> 70 deg correction in 45s
+        #
+        # Convention (confirmed by Test A + Test B):
+        #   Positive steering = turn right:
+        #     Left legs: longer stride  (amplitude * (1 + steering))
+        #     Right legs: shorter stride (amplitude * (1 - steering))
+        #   Leg indices: FL=0, RL=2 are left; FR=1, RR=3 are right
         steering_clamped = np.clip(steering, -0.6, 0.6)
 
         # Generate per-joint commands
@@ -160,8 +171,15 @@ class SpinalCPG:
         for leg_idx in range(self.n_legs):
             phase = self._phases[leg_idx]
             base = leg_idx * self.jpleg
-            # Hip/knee amplitude is SYMMETRIC (no per-leg scaling)
-            leg_amplitude = amplitude
+
+            # Determine stride scale for this leg based on steering
+            is_left = (leg_idx % 2 == 0)  # FL=0, RL=2 are left
+            if is_left:
+                stride_scale = 1.0 + steering_clamped  # Turn right -> left legs longer
+            else:
+                stride_scale = 1.0 - steering_clamped  # Turn right -> right legs shorter
+
+            leg_amplitude = amplitude * stride_scale
 
             # Raw sine for this leg
             raw_sin = np.sin(phase)
@@ -175,29 +193,19 @@ class SpinalCPG:
             # === Abduction (index 0 in leg) ===
             if self.jpleg >= 1:
                 # Base: slight lateral sway, in-phase with hip
-                abd_cmd = raw_sin * cfg.abd_amplitude * leg_amplitude * 0.5
-                # Steering: DC offset on abduction to produce yaw rotation.
-                # Left legs (0,2) get +offset, right legs (1,3) get -offset.
-                # This pushes the body into a turn without destabilizing the gait.
-                if abs(steering_clamped) > 0.02:
-                    is_left = (leg_idx % 2 == 0)  # FL=0, RL=2 are left
-                    steer_offset = steering_clamped * cfg.abd_amplitude * 5.0
-                    if is_left:
-                        abd_cmd += steer_offset
-                    else:
-                        abd_cmd -= steer_offset
+                # No steering offset here -- steering is via hip amplitude only
+                abd_cmd = raw_sin * cfg.abd_amplitude * amplitude * 0.5
                 commands[base + 0] = abd_cmd
 
             # === Hip (index 1 in leg) ===
             if self.jpleg >= 2:
-                # Main swing: forward/backward
-                # v0.3.4: removed negation — Go2 walks FORWARD now
+                # Main swing: forward/backward -- ASYMMETRIC per steering
                 hip_cmd = raw_sin * cfg.hip_amplitude * leg_amplitude * power
                 commands[base + 1] = hip_cmd
 
             # === Knee (index 2 in leg) ===
             if self.jpleg >= 3:
-                # Knee has phase offset: flexes during swing for ground clearance
+                # Knee follows hip asymmetry for consistent stride length
                 knee_phase = phase + cfg.knee_phase_offset * 2 * np.pi
                 knee_sin = np.sin(knee_phase)
                 knee_cmd = knee_sin * cfg.knee_amplitude * leg_amplitude
@@ -237,12 +245,12 @@ class SpinalCPG:
             freq_scale: BehaviorPlanner frequency multiplier (1.0=walk, 1.4=trot, 0.0=rest)
             amp_scale: BehaviorPlanner amplitude multiplier (1.0=normal, 0.4=sniff, 0.0=rest)
         
-        Returns: np.ndarray of shape (12,) for 4 legs × 3 actuators
+        Returns: np.ndarray of shape (12,) for 4 legs x 3 actuators
         """
         cfg = self.config
         self._step += 1
 
-        # Phase advance — modulated by behavior frequency scale
+        # Phase advance -- modulated by behavior frequency scale
         # Biology: brainstem locomotor region (MLR) controls CPG frequency
         # via reticulospinal projections. Higher drive = faster gait.
         d_phase = 2 * np.pi * cfg.frequency * freq_scale * dt
@@ -257,7 +265,7 @@ class SpinalCPG:
         # Biology: motor cortex gain control on spinal interneurons
         amplitude *= amp_scale
 
-        commands = np.zeros(12)  # 4 legs × 3 actuators
+        commands = np.zeros(12)  # 4 legs x 3 actuators
 
         # Motor babbling: per-leg amplitude noise for neonatal exploration.
         # Biology: immature motor units fire irregularly, creating
@@ -289,7 +297,7 @@ class SpinalCPG:
             commands[base + 0] = raw_sin * cfg.abd_amplitude * amplitude * 0.3 + leg_noise * 0.3
 
             # Lift: raise leg during swing, plant during stance
-            # Main locomotion driver — needs clear swing phase
+            # Main locomotion driver -- needs clear swing phase
             lift_cmd = raw_sin * cfg.hip_amplitude * amplitude * power * (1.0 + leg_noise)
             commands[base + 1] = lift_cmd
 

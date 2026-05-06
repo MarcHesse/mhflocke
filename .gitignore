@@ -27,6 +27,7 @@ creatures/*/v0*_*/
 creatures/*/brain/
 checkpoints/
 output/
+data/
 
 # Media (generated from FLOGs)
 *.mp4
@@ -43,3 +44,17 @@ _train_temp_*.xml
 _ppo_temp.xml
 ftp_sync.log
 *.log
+
+# Internal documentation (must not be in public repo)
+docs/HONEST_CLAIMS.md
+docs/SESSION_SUMMARY_*.md
+docs/NEXT_CHAT_BRIEFING.md
+docs/SESSION_START_CHECKLIST.md
+docs/CHANGELOG_v0.6.0_DRAFT.md
+docs/HARDWARE_*.md
+docs/LESSONS_LEARNED*.md
+docs/KNOWN_ISSUES*.md
+NEXT_CHAT_BRIEFING.md
+CLAUDE_CODE_BRIEFING.md
+PAPER2_REVIEW_ISSUES.md
+issue_*.md

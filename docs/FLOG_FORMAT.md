@@ -1,7 +1,15 @@
 # FLOG Binary Format — Structure Documentation
 
-**MH-FLOCKE Level 15 v0.5.0**
-**Document Version:** 1.1 — April 15, 2026
+**MH-FLOCKE Level 15 v0.5.x**
+**Document Version:** 1.2 — May 2, 2026
+
+Changelog:
+- 1.2 (May 2026): Phototaxis navigation fields added to FRAME_CREATURE
+  (`dist_to_light`, `intent_yaw_rate`) and FRAME_TRAINING (`pos_x/y`,
+  `dist_to_light`, `heading_to_light`, `intent_yaw_rate`, `brain_pos_x/y`,
+  `brain_pos_error`, `brain_landmarks_json`, `brain_visit_grid_b64`,
+  `brain_grid_shape`).
+- 1.1 (April 2026): Initial v0.5.0 documentation.
 
 ---
 
@@ -78,17 +86,19 @@
 
 Recorded every 10 simulation steps. Contains full MuJoCo state.
 
-| Key       | Type         | Description                                  |
-|-----------|--------------|----------------------------------------------|
-| step      | int          | Training step number                         |
-| heading   | float        | Forward heading (0-1, dot product)           |
-| speed     | float        | Forward velocity (m/s)                       |
-| x         | float        | Creature X position (world coords)           |
-| y         | float        | Creature Y position (world coords)           |
-| ball_pos  | [f, f, f]    | Ball position [x, y, z] (world coords)       |
-| pos       | [f × 26]     | Full qpos array (Go2: 7 root + 12 joints + 7 ball) |
-| vel       | [f × 24]     | Full qvel array (Go2: 6 root + 12 joints + 6 ball) |
-| com       | [f, f, f]    | Center of mass [x, y, z]                     |
+| Key             | Type         | Description                                  |
+|-----------------|--------------|----------------------------------------------|
+| step            | int          | Training step number                         |
+| heading         | float        | Forward heading (0-1, dot product)           |
+| speed           | float        | Forward velocity (m/s)                       |
+| x               | float        | Creature X position (world coords)           |
+| y               | float        | Creature Y position (world coords)           |
+| ball_pos        | [f, f, f]    | Ball position [x, y, z] (world coords)       |
+| pos             | [f × 26]     | Full qpos array (Go2: 7 root + 12 joints + 7 ball) |
+| vel             | [f × 24]     | Full qvel array (Go2: 6 root + 12 joints + 6 ball) |
+| com             | [f, f, f]    | Center of mass [x, y, z]                     |
+| dist_to_light   | float        | Distance to light body (m), -1 if no light (v0.5.x) |
+| intent_yaw_rate | float        | Current motor steering command (v0.5.x) |
 
 **qpos layout (26 values):**
 - `[0:3]` — root position (x, y, z)
@@ -295,6 +305,63 @@ Where `{leg}` is one of: `FL`, `FR`, `RL`, `RR`.
 | scents_found       | int    | Number of scent sources found              |
 | olfactory_steering | float  | Olfactory steering contribution            |
 | scent_0_x/y        | float  | First scent source position                |
+
+**Phototaxis Navigation (v0.5.x):**
+
+Ground-truth fields written when phototaxis scene is active. On hardware
+the ground-truth fields use sentinel values (`dist_to_light=-1.0`,
+`heading_to_light=-999.0`) because the world-frame light position is
+not known to the robot — only the brain-map fields contain meaningful
+data there.
+
+| Key               | Type   | Description                                |
+|-------------------|--------|--------------------------------------------|
+| pos_x             | float  | Creature X position, world coords (canonical) |
+| pos_y             | float  | Creature Y position, world coords (canonical) |
+| dist_to_light     | float  | Distance to light body (m), -1 if no light or unknown |
+| heading_to_light  | float  | Angle to light from creature (world rad), -999 if unknown |
+| intent_yaw_rate   | float  | Current motor steering command (`creature._steering_offset`) |
+
+**Brain Map (v0.5.x) — What the Dog Believes:**
+
+Snapshot of the creature's internal `SpatialMap` state, written at
+`log_every` interval (~1.5 KB per snapshot). Renderer uses this to
+draw the second "what the dog knows" minimap, separate from the
+ground-truth outer minimap. Persists across the run via
+`spatial_map.state_dict()` in the checkpoint, so a re-loaded brain
+starts with its accumulated landmark and visit-grid memory intact.
+
+| Key                  | Type    | Description                                          |
+|----------------------|---------|------------------------------------------------------|
+| brain_pos_x          | float   | Dead-reckoned X position from path integration       |
+| brain_pos_y          | float   | Dead-reckoned Y position from path integration       |
+| brain_pos_error      | float   | Drift between brain belief and ground truth (m)      |
+| brain_landmarks_json | string  | JSON list of known landmarks (see schema below)      |
+| brain_visit_grid_b64 | string  | Base64-encoded uint8 visit grid (clamped 0–255)      |
+| brain_grid_shape     | [int,int] | Shape of decoded visit grid, e.g. `[20, 20]`      |
+
+*Landmark JSON schema (one element per landmark with confidence ≥ 0.05):*
+```json
+{
+  "name":     "light",        // Landmark identifier
+  "x":        2.34,           // World-X position (brain-frame)
+  "y":        -0.12,          // World-Y position (brain-frame)
+  "cat":      "goal",         // 'home' | 'goal' | 'obstacle' | 'object' | 'danger'
+  "conf":     0.873,          // Confidence (0–1), decays over time without re-observation
+  "val":      0.8,            // Valence (-1 to +1), emotional association
+  "visits":   42,             // How often the dog has seen / been at this landmark
+  "last_seen": 12340          // Step when last observed
+}
+```
+
+*Decoding the visit grid in Python:*
+```python
+import base64, numpy as np
+shape = tuple(frame['brain_grid_shape'])     # e.g. (20, 20)
+raw   = base64.b64decode(frame['brain_visit_grid_b64'])
+grid  = np.frombuffer(raw, dtype=np.uint8).reshape(shape)
+# grid[gy, gx] = visit count at that cell (saturated at 255)
+```
 
 ### 4.3 FRAME_EVENT (type=3) — Milestone Events
 

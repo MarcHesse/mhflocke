@@ -1,0 +1,26 @@
+{
+  "name": "No drift (control)",
+  "description": "Zero drift profile for A/B comparison. Use as control baseline to measure the effect of drift on training outcomes. All values are zero — the robot behaves ideally.",
+  "platform": "any",
+
+  "yaw_drift": {
+    "rate_deg_per_s": 0.0,
+    "noise_std_deg_per_s": 0.0,
+    "accelerates_under_load": false,
+    "max_rate_deg_per_s": 0.0
+  },
+
+  "roll_bias": {
+    "mean_deg": 0.0,
+    "noise_std_deg": 0.0
+  },
+
+  "servo_asymmetry": {
+    "FL": 1.0,
+    "FR": 1.0,
+    "RL": 1.0,
+    "RR": 1.0
+  },
+
+  "notes": "Control profile. Identical to not loading any profile, but explicit for experiment documentation."
+}

@@ -12,6 +12,9 @@ Based on train_v032.py v0.4.3 with ONE surgical change:
 
 v0.4.3: Obstacle avoidance, graded DCN, additive CPG blending.
 v0.4.8: Run-and-Tumble chemotaxis replaces continuous olfactory steering.
+v0.5.x: Phototaxis navigation logging — ground truth pos/dist plus the
+  creature's own SpatialMap snapshot (landmarks + visit grid) so a
+  renderer can show both the world view and the dog's internal map.
 #   v0.4.2: Scalable SNN for hardware brain transfer.
   - --n-hidden: SNN hidden neuron count (default from profile.json)
   - --hardware-sensors: Bridge v2.5 sensor layout (12 servo + 2 CPG + 4 IMU)
@@ -60,6 +63,7 @@ if sys.platform != 'win32':
 import argparse
 import time
 import json
+import base64
 import logging
 import numpy as np
 import torch
@@ -79,6 +83,9 @@ from src.brain.gait_quality import GaitQualityAnalyzer, GaitQualityConfig, GAIT_
 from src.brain.body_awareness import BodyAwareness, BODY_AWARENESS_VERSION
 from src.brain.spatial_map import SpatialMap, SPATIAL_MAP_VERSION
 from src.brain.directed_learning import DirectedLearning, DIRECTED_LEARNING_VERSION
+from src.brain.episode_analyzer import EpisodeAnalyzer
+from src.brain.strategy_adapter import StrategyAdapter
+from src.brain.curiosity_hypothesis import CuriosityExplorer, HypothesisGenerator
 from src.body.terrain import (
     TerrainConfig, generate_heightfield, inject_terrain, inject_terrain_geoms,
     terrain_type_from_scene, difficulty_from_scene, inject_ball, inject_wall,
@@ -283,13 +290,14 @@ def patch_xml_timestep(xml_path, new_timestep=0.005):
 class CompetenceGate:
     """Competence-gated CPG->Actor handoff. Resolves Issue #45.
     
-    v0.3.5: Stability-aware gate. Actor competence now requires BOTH
-    speed AND stability. The actor must prove it can maintain upright
-    posture while moving, not just push the creature forward into falls.
+    v0.5.0: Stability-primary gate. Actor competence grows based on
+    upright stability, not speed. A baby that stands and takes small
+    steps is competent even if slow. Speed was blocking handoff when
+    mechanical drift consumed most locomotion energy for correction.
     
-    Ablation finding: Speed-only gate let actor reach cpg_min (40%) by
-    step 4k, then falls escalated because actor disrupted CPG rhythm
-    without maintaining balance. Now: fall_rate resets competence hard.
+    Biology: Motor competence in neonates is assessed by postural
+    stability first, locomotion speed second. A foal that stands
+    steadily for 10 minutes is ready to walk, regardless of speed.
     """
 
     def __init__(self, speed_threshold=0.03, grow_rate=0.0002,
@@ -333,18 +341,25 @@ class CompetenceGate:
         # Smooth velocity
         self.vel_ema = self.vel_ema * self.vel_ema_decay + vel_mps * (1.0 - self.vel_ema_decay)
         
-        # Competence grows only if BOTH speed and stability are good
+        # v0.5.0: Stability-primary competence
+        # Stability alone is enough for slow growth (baby standing steadily)
+        # Speed adds bonus growth (baby walking confidently)
         is_moving = self.vel_ema > self.speed_threshold
         is_stable = self._fall_rate < 5.0 and self._upright_ema > 0.85
         
-        if is_moving and is_stable:
-            # Actor is both moving AND stable: grow competence
-            self.actor_competence = min(1.0, self.actor_competence + self.grow_rate)
+        if is_stable and is_moving:
+            # Stable AND moving: fastest growth
+            self.actor_competence = min(1.0, self.actor_competence + self.grow_rate * 1.5)
+        elif is_stable:
+            # Stable but slow/stopped: still grow, just slower
+            # This is the key change — drift compensation may consume
+            # movement energy, but the actor is still learning balance
+            self.actor_competence = min(1.0, self.actor_competence + self.grow_rate * 0.5)
         elif is_moving and not is_stable:
             # Moving but unstable: actor is causing problems, shrink faster
             self.actor_competence = max(0.0, self.actor_competence - self.shrink_rate * 3)
         else:
-            # Stopped: shrink normally
+            # Fallen handled above, this is stopped+unstable
             self.actor_competence = max(0.0, self.actor_competence - self.shrink_rate)
         
         self._recompute_cpg()
@@ -390,6 +405,8 @@ def main():
     parser.add_argument('--no-sensory', action='store_true', help='Disable sensory environment (no scent/sound)')
     parser.add_argument('--phototaxis', action='store_true',
                         help='Use light-based navigation instead of scent (camera bilateral brightness)')
+    parser.add_argument('--drift-profile', type=str, default=None,
+                        help='Path to hardware drift profile JSON (e.g. creatures/freenove/drift_profiles/measured_marc_01.json)')
     parser.add_argument('--difficulty', type=float, default=None)
     parser.add_argument('--pci-interval', type=int, default=500)
     parser.add_argument('--resume', type=str, default=None)
@@ -549,8 +566,8 @@ def main():
             if _scene_has_wall:
                 xml_string = inject_wall(xml_string, distance=_wall_distance)
             if _scene_has_light:
-                xml_string = inject_light(xml_string, pos=(2.0, 0.5, 0.02))
-                print(f'  Light: injected for phototaxis navigation')
+                xml_string = inject_light(xml_string, pos=(2.0, 0.0, 0.02))
+                print(f'  Light: injected at (2.0, 0.0) — 2m straight ahead')
             # Write temp file next to original (so <include> paths resolve)
             temp_xml = os.path.join(os.path.dirname(xml_path), f'_train_temp_{_pid}.xml')
             with open(temp_xml, 'w') as f:
@@ -591,8 +608,8 @@ def main():
         if _scene_has_wall:
             xml_string = inject_wall(xml_string, distance=_wall_distance)
         if _scene_has_light:
-            xml_string = inject_light(xml_string, pos=(2.0, 0.5, 0.02))
-            print(f'  Light: injected for phototaxis navigation')
+            xml_string = inject_light(xml_string, pos=(2.0, 0.0, 0.02))
+            print(f'  Light: injected at (2.0, 0.0) — 2m straight ahead')
         creature = MuJoCoCreatureBuilder.build(genome, world=world, device=device,
             creature_name=args.creature_name.lower(), xml_string=xml_string,
             n_hidden_neurons=n_hidden,
@@ -814,6 +831,12 @@ def main():
     # --- Issue #75: Sensory Environment ---
     sensory_env = None
     visual_env = None  # Phototaxis mode
+    # Pre-init light body IDs so they always exist (used in FLOG block).
+    # The 'if visual_env:' branch overwrites these when phototaxis is active.
+    _lt_body_id = -1
+    _lt_jnt_id = -1
+    _lt_qposadr = -1
+    _lt_dofadr = -1
     if drive_bridge and not args.no_sensory:
         try:
             if _scene_has_light:
@@ -883,6 +906,22 @@ def main():
             print(f'  Sensory env: init failed ({e})')
             sensory_env = None
 
+    # === v4.2: HardwareDrift — inject measured mechanical drift ===
+    from src.body.hardware_drift import HardwareDrift
+    if args.drift_profile:
+        hardware_drift = HardwareDrift.from_profile(args.drift_profile)
+    else:
+        hardware_drift = HardwareDrift()  # No-op
+
+    # === v4.2: LightMemory — return to last known yaw when light lost ===
+    light_memory = None
+    if _scene_has_light:
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+        from freenove_bridge import LightMemory
+        light_memory = LightMemory(return_gain=0.4, timeout_seconds=10.0,
+                                   z_sign=-1.0)  # Simulator: +Z → turn left
+        print(f'  LightMemory: enabled (gain=0.4, timeout=10s)')
+
     start_step = 0
     if args.resume and os.path.exists(args.resume):
         print(f'\n  Resuming from {args.resume}...')
@@ -899,6 +938,9 @@ def main():
             print(f'  ⚠ SNN state not found, starting fresh weights')
         if cb and 'cerebellum_state' in ckpt:
             cb.load_state_dict(ckpt['cerebellum_state'])
+        # v4.2: Restore spatial map
+        if 'spatial_map' in ckpt:
+            spatial_map.load_state_dict(ckpt['spatial_map'])
         start_step = ckpt.get('step', 0)
         gate.actor_competence = ckpt.get('actor_competence', 0.0)
         gate.cpg_weight = ckpt.get('cpg_weight', gate.cpg_max)
@@ -1144,6 +1186,32 @@ def main():
     )
     print(f'  Directed Learning: {DIRECTED_LEARNING_VERSION} (eval every {directed_learning.eval_interval} steps, test {directed_learning.test_duration} steps)')
 
+    # --- Episode Analyzer (Meta-Learning Loop Phase A) ---
+    episode_analyzer = EpisodeAnalyzer(
+        min_events_for_analysis=4,
+        max_events=200,
+        confidence_threshold=0.5,
+    )
+    print(f'  EpisodeAnalyzer: v0.1.0 (Phase A meta-learning loop)')
+
+    # --- Strategy Adapter (Meta-Learning Loop Phase B) ---
+    strategy_adapter = StrategyAdapter(
+        confidence_threshold=0.5,
+        max_adjustment_pct=0.3,
+    )
+    # Initialize with current RT parameters
+    strategy_adapter.params['rt_run_duration'] = float(_RT_RUN_DURATION)
+    strategy_adapter.params['rt_tumble_duration'] = float(_RT_TUMBLE_DURATION)
+    print(f'  StrategyAdapter: v0.1.0 (Phase B meta-learning loop)')
+
+    # --- Curiosity Explorer (Meta-Learning Loop Phase C) ---
+    curiosity_explorer = CuriosityExplorer()
+    print(f'  CuriosityExplorer: v0.1.0 (Phase C meta-learning loop)')
+
+    # --- Hypothesis Generator (Meta-Learning Loop Phase D) ---
+    hypothesis_generator = HypothesisGenerator(min_insight_confidence=0.5)
+    print(f'  HypothesisGenerator: v0.1.0 (Phase D meta-learning loop)')
+
     for step in range(start_step, total_steps):
         t_step = time.perf_counter()
         _tp0 = t_step  # profile marker
@@ -1286,6 +1354,14 @@ def main():
             _rel_ball_sp = _bp_sp - spatial_map.position
             spatial_map.observe_landmark('ball', _rel_ball_sp, category='goal',
                                         valence=0.8, distance=float(np.linalg.norm(_rel_ball_sp)))
+        # v4.2: Observe light source as landmark (same as ball)
+        if _lt_body_id >= 0:
+            _lp_sp = world._data.xpos[_lt_body_id][:2].copy()
+            _rel_light_sp = _lp_sp - spatial_map.position
+            _light_dist = float(np.linalg.norm(_rel_light_sp))
+            if _light_dist < 5.0:  # Only observe within camera range
+                spatial_map.observe_landmark('light', _rel_light_sp, category='goal',
+                                            valence=1.0, distance=_light_dist)
         _obs_dist_sp = sensor_data.get('obstacle_distance', -1.0)
         if _obs_dist_sp >= 0 and _obs_dist_sp < 0.5:
             _wall_rel_sp = np.array([_obs_dist_sp * np.cos(_yaw_sp), _obs_dist_sp * np.sin(_yaw_sp)])
@@ -1308,6 +1384,40 @@ def main():
             _light_reached = visual_env.check_light_reached(creature_pos)
             if _light_reached:
                 sensor_data['scent_reward'] = 0.5
+                # Meta-Learning Loop Phase A: record successful navigation
+                episode_analyzer.record_event('found', {
+                    'smell_strength': sensor_data.get('smell_strength', 0.0),
+                    'gait_quality': getattr(gait_analyzer, "_cached_gq", 0.5) if gait_analyzer else 0.0,
+                    'heading_error': abs(getattr(creature, '_ball_heading', 0.0)),
+                    'steering_offset': getattr(creature, '_steering_offset', 0.0),
+                    'upright': upright,
+                    'velocity': vel_mps,
+                    'cpg_weight': gate.cpg_weight if gate else 0.9,
+                    'actor_competence': gate.actor_competence if gate else 0.0,
+                    'steps_since_last': step - getattr(creature, '_last_found_step', 0),
+                    'cumulative_turn': getattr(creature, '_cumulative_turn', 0.0),
+                }, step=step)
+                creature._last_found_step = step
+                creature._cumulative_turn = 0.0
+
+            # Meta-Learning: periodic "missed" event if no light found for too long
+            # Biology: foraging timeout — if no reward in N steps, strategy was bad
+            _MISSED_THRESHOLD = 15000  # ~5 minutes of walking
+            _steps_since = step - getattr(creature, '_last_found_step', 0)
+            if (_steps_since > 0 and _steps_since % _MISSED_THRESHOLD == 0
+                    and step > 5000):
+                episode_analyzer.record_event('missed', {
+                    'smell_strength': sensor_data.get('smell_strength', 0.0),
+                    'gait_quality': getattr(gait_analyzer, "_cached_gq", 0.5) if gait_analyzer else 0.0,
+                    'heading_error': abs(getattr(creature, '_ball_heading', 0.0)),
+                    'steering_offset': getattr(creature, '_steering_offset', 0.0),
+                    'upright': upright,
+                    'velocity': vel_mps,
+                    'cpg_weight': gate.cpg_weight if gate else 0.9,
+                    'actor_competence': gate.actor_competence if gate else 0.0,
+                    'steps_since_last': _steps_since,
+                    'cumulative_turn': getattr(creature, '_cumulative_turn', 0.0),
+                }, step=step)
             # Sync light body position in MuJoCo every 10 steps (not every step)
             if _lt_qposadr >= 0 and step % 10 == 0 and len(visual_env.get_light_positions()) > 0:
                 _lt_pos = visual_env.get_light_positions()[0]
@@ -1315,10 +1425,23 @@ def main():
                 world._data.qpos[_lt_qposadr + 3:_lt_qposadr + 7] = [1, 0, 0, 0]
                 world._data.qvel[_lt_dofadr:_lt_dofadr + 6] = 0.0
 
-            # Phototactic steering
+            # Phototactic steering — v0.5.0 IMU PD closed-loop
+            # Same approach as Bridge v4.4: camera provides target_yaw,
+            # PD controller on yaw error drives asymmetric stride via CPG.
+            # Hardware-validated: Test C (2026-05-03) proved this 3x more
+            # effective than VOR/abduction-offset steering.
             _qw_olf, _qx_olf, _qy_olf, _qz_olf = world._data.qpos[3:7]
             heading = float(np.arctan2(2.0 * (_qw_olf * _qz_olf + _qx_olf * _qy_olf),
                                        1.0 - 2.0 * (_qy_olf**2 + _qz_olf**2)))
+            _yaw_deg = float(np.degrees(heading))
+
+            # Track cumulative turning for EpisodeAnalyzer
+            if hasattr(creature, '_prev_yaw_for_turn'):
+                _yaw_change = abs(_yaw_deg - creature._prev_yaw_for_turn)
+                if _yaw_change > 180: _yaw_change = 360 - _yaw_change
+                creature._cumulative_turn = getattr(creature, '_cumulative_turn', 0.0) + _yaw_change
+            creature._prev_yaw_for_turn = _yaw_deg
+
             _actor_comp = getattr(gate, 'actor_competence', 0.0)
             if _actor_comp > 0.1 or step > 5000:
                 olf_steer = visual_env.get_phototactic_steering(
@@ -1328,23 +1451,79 @@ def main():
             sensor_data['olfactory_steering'] = olf_steer
             sensor_data['scents_found'] = visual_env.lights_found
 
-            # Direct steering: treat light as visual target (like ball)
-            # This bypasses RT and drives CPG steering directly via VOR
-            if abs(olf_steer) > 0.05:
-                creature._ball_heading = olf_steer  # [-1, +1] steering signal
-                creature._ball_salience = sensor_data['smell_strength']
+            # Initialize PID controller state (once)
+            if not hasattr(creature, '_pd_yaw_target'):
+                creature._pd_yaw_target = _yaw_deg
+                creature._pd_prev_error = 0.0
+                creature._pd_integral = 0.0
+                creature._pd_steering = 0.0
+                # PID gains — sim needs higher Kp than hardware (0.03) because
+                # HardwareDrift.apply() torque is stronger than real mechanical drift
+                creature._pd_kp = 0.08
+                creature._pd_ki = 0.005   # I-term: eliminates steady-state drift offset
+                creature._pd_kd = 0.02
+                creature._pd_max = 0.6
+                creature._pd_integral_max = 30.0  # anti-windup clamp
+
+            # Camera/phototaxis provides target heading:
+            # olf_steer convention from get_phototactic_steering():
+            #   positive = light is to the LEFT (angle_diff = light_angle - heading)
+            #   negative = light is to the RIGHT
+            # MuJoCo yaw convention: positive = counterclockwise (left)
+            # So: olf_steer positive → need to turn left → increase yaw
+            _HALF_FOV_DEG = 31.0
+            _cam_salience = sensor_data.get('smell_strength', 0.0)
+            if _cam_salience > 0.02:
+                # Always update target when light is visible, even if heading is small
+                # Old threshold (0.05) prevented target updates when dog was already
+                # pointed roughly at the light, causing it to drift past
+                creature._pd_yaw_target = _yaw_deg + olf_steer * _HALF_FOV_DEG
+                creature._ball_heading = olf_steer
+                creature._ball_salience = _cam_salience
             else:
                 creature._ball_heading = 0.0
                 creature._ball_salience = 0.0
-            # VOR: turn toward light (same as ball VOR in sensory_env block)
-            _cur_cpg_w = getattr(gate, 'cpg_weight', 0.9)
-            _vor_steer = vor.compute(
-                creature._ball_heading, creature._ball_salience,
-                upright, cpg_weight=_cur_cpg_w)
-            if cb:
-                _cb_mod = cb.inferior_olive.get_steering_gain_correction()
-                _vor_steer = _vor_steer * (1.0 + _cb_mod)
-            creature._steering_offset = _vor_steer
+
+            # v4.2: LightMemory — when light lost, steer to remembered yaw
+            if light_memory:
+                _mem_z = light_memory.update(
+                    cam_salience=_cam_salience,
+                    cam_heading=olf_steer,
+                    current_yaw=_yaw_deg,
+                    current_time=time.time(),
+                )
+                if _cam_salience <= 0.05 and light_memory.state == 'returning':
+                    creature._pd_yaw_target = light_memory._target_yaw
+
+            # PID controller: yaw error -> steering
+            _yaw_error = creature._pd_yaw_target - _yaw_deg
+            # Normalize to [-180, 180]
+            while _yaw_error > 180: _yaw_error -= 360
+            while _yaw_error < -180: _yaw_error += 360
+
+            # I-term: accumulate error over time (eliminates steady-state offset)
+            # Biology: cerebellar LTD accumulates over seconds/minutes
+            creature._pd_integral += _yaw_error * args.timestep
+            creature._pd_integral = max(-creature._pd_integral_max,
+                                        min(creature._pd_integral_max, creature._pd_integral))
+
+            _error_rate = (_yaw_error - creature._pd_prev_error) / args.timestep
+            creature._pd_prev_error = _yaw_error
+
+            _steering = (creature._pd_kp * _yaw_error +
+                         creature._pd_ki * creature._pd_integral +
+                         creature._pd_kd * _error_rate)
+            # Negate: MuJoCo yaw positive = left, but CPG steering positive = right
+            # Positive yaw_error means "need to turn left" → negative CPG steering
+            _steering = -_steering
+            _steering = max(-creature._pd_max, min(creature._pd_max, _steering))
+
+            # Low-pass filter
+            _alpha = 0.3
+            creature._pd_steering = creature._pd_steering * (1.0 - _alpha) + _steering * _alpha
+
+            # Apply to creature steering
+            creature._steering_offset = creature._pd_steering
 
         elif sensory_env:
             creature_pos = np.array([float(world._data.qpos[0]),
@@ -2109,8 +2288,10 @@ def main():
             _cpg_kwargs['steering'] = _cpg_steering
             cpg_cmd = spinal_cpg.compute(**_cpg_kwargs)
         else:
-            # Bommel with SpinalCPG: tendon-coupled actuators
-            cpg_cmd = spinal_cpg.compute_tendon(**_cpg_kwargs)
+            # Freenove/Bommel with SpinalCPG: use compute() with steering
+            # v0.5.0: steering via asymmetric stride must work for ALL creatures
+            _cpg_kwargs['steering'] = _cpg_steering
+            cpg_cmd = spinal_cpg.compute(**_cpg_kwargs)
 
         # Apply leg damage: zero actuators for disabled leg
         for _dj in _damaged_actuators:
@@ -2136,6 +2317,9 @@ def main():
                 creature._cpg_phase_input = spinal_cpg.get_phase_input()
 
         _tp2 = time.perf_counter(); _profile['sensory_env'] += _tp2 - _tp1
+
+        # v4.2: Apply hardware drift before physics step
+        hardware_drift.apply(creature)
 
         step_result = creature.step(
             reward_signal=learning_signal,
@@ -2218,6 +2402,14 @@ def main():
         pci_val = brain_result.get('pci', None)
         if pci_val is not None and pci_val > 0:
             last_pci = pci_val
+
+        # Phase C: CuriosityExplorer — update exploration drive from PE
+        _pe_val = getattr(creature.brain, '_prediction_error', 0.0) if hasattr(creature, 'brain') else 0.0
+        _grid_cov = 0.0
+        if spatial_map:
+            _sp_stats = spatial_map.stats()
+            _grid_cov = _sp_stats.get('cells_visited', 0) / max(1, _sp_stats.get('grid_size', 400))
+        curiosity_explorer.update(_pe_val, grid_coverage=_grid_cov)
         # R-STDP is now handled by CognitiveBrain.process() (step 11)
         # with protected_populations filtering cerebellar synapses.
         # No duplicate apply_rstdp needed here.
@@ -2257,6 +2449,19 @@ def main():
                 if reset_count <= 10 or reset_count % 10 == 0:
                     print(f'  [PROGRESS RESET #{reset_count} at step {step} — no dist gain for {_PROGRESS_STUCK_STEPS} steps, up={upright:.2f}]')
                 body_awareness.reset_after_physics_reset()  # v0.7.0: prevent false positives
+                # Meta-Learning Loop Phase A: record timeout
+                episode_analyzer.record_event('timeout', {
+                    'smell_strength': sensor_data.get('smell_strength', 0.0),
+                    'gait_quality': getattr(gait_analyzer, "_cached_gq", 0.5) if gait_analyzer else 0.0,
+                    'heading_error': abs(getattr(creature, '_ball_heading', 0.0)),
+                    'steering_offset': getattr(creature, '_steering_offset', 0.0),
+                    'upright': upright,
+                    'velocity': vel_mps,
+                    'cpg_weight': gate.cpg_weight if gate else 0.9,
+                    'actor_competence': gate.actor_competence if gate else 0.0,
+                    'steps_since_last': step - getattr(creature, '_last_found_step', 0),
+                    'cumulative_turn': getattr(creature, '_cumulative_turn', 0.0),
+                }, step=step)
         _tp4 = time.perf_counter(); _profile['brain'] += _tp4 - _tp3
         step_dt = time.perf_counter() - t_step
         step_times.append(step_dt)
@@ -2272,6 +2477,41 @@ def main():
                       f'total:{total_prof*1000/5000:.1f}ms/step')
             _profile = {k: 0.0 for k in _profile}
 
+        # EpisodeAnalyzer + StrategyAdapter + CuriosityExplorer + HypothesisGenerator
+        if step > 0 and step % 10000 == 0:
+            # Phase A → Phase B: insights → parameter adjustments
+            _new_insights = episode_analyzer.get_new_insights()
+            if _new_insights:
+                strategy_adapter.process_insights(_new_insights, step=step)
+                # Phase D: insights → hypotheses
+                _new_hyps = hypothesis_generator.generate_from_insights(_new_insights, step=step)
+                for _ins in _new_insights:
+                    print(f'  [INSIGHT] {_ins.description} (conf={_ins.confidence:.2f})')
+                for _adj in strategy_adapter.get_pending_adjustments():
+                    print(f'  [STRATEGY] {_adj.parameter}: {_adj.old_value:.1f} → {_adj.new_value:.1f} ({_adj.reason})')
+                for _hyp in hypothesis_generator.get_pending():
+                    print(f'  [HYPOTHESIS] {_hyp.description} (param={_hyp.parameter} val={_hyp.value:.2f})')
+
+            # Apply adapted parameters back to RT state machine
+            _RT_RUN_DURATION_BASE = strategy_adapter.get_rt_run_duration()
+            _RT_TUMBLE_DURATION = strategy_adapter.get_rt_tumble_duration()
+
+            # Phase C: curiosity modulates RT on top of strategy
+            _curiosity_mods = curiosity_explorer.get_rt_modulation()
+            _RT_RUN_DURATION_BASE = int(_RT_RUN_DURATION_BASE * _curiosity_mods['rt_run_scale'])
+            _RT_TUMBLE_DURATION = max(6, int(_RT_TUMBLE_DURATION * _curiosity_mods['rt_tumble_scale']))
+
+            # PID Kp scaling
+            if hasattr(creature, '_pd_kp'):
+                creature._pd_kp = 0.08 * strategy_adapter.get_pid_kp_scale()
+
+            _ea_sr = episode_analyzer.get_success_rate()
+            _ea_n = len(episode_analyzer.events)
+            _hg_s = hypothesis_generator.stats()
+            _ce_d = curiosity_explorer.get_exploration_drive()
+            if _ea_n > 0:
+                print(f'  [META-LOOP] events={_ea_n} sr={_ea_sr:.0%} insights={len(episode_analyzer.insights)} adj={len(strategy_adapter.adjustments)} hyp={_hg_s["hypothesis_total"]} confirmed={_hg_s["hypothesis_confirmed"]} explore={_ce_d:.2f}')
+
         # GC every 2000 steps to prevent PyTorch memory fragmentation
         if step > 0 and step % 2000 == 0:
             _gc.collect()
@@ -2285,6 +2525,16 @@ def main():
                 if _ball_id_flog >= 0:
                     bp = world._data.xpos[_ball_id_flog]
                     extra_creature['ball_pos'] = [float(bp[0]), float(bp[1]), float(bp[2])]
+                # Per-frame phototaxis fields for renderer minimap.
+                # dist_to_light = ground-truth distance from creature to light body
+                # intent_yaw_rate = current motor steering command (what the dog *wants*)
+                if _lt_body_id >= 0:
+                    _lp_flog = world._data.xpos[_lt_body_id][:2]
+                    _to_light_flog = _lp_flog - np.array([float(qpos[0]), float(qpos[1])])
+                    extra_creature['dist_to_light'] = float(np.linalg.norm(_to_light_flog))
+                else:
+                    extra_creature['dist_to_light'] = -1.0
+                extra_creature['intent_yaw_rate'] = float(getattr(creature, '_steering_offset', 0.0))
                 recorder.record_creature(joint_positions=qpos.copy(), joint_velocities=world._data.qvel.copy(),
                     center_of_mass=qpos[:3].copy(), heading=float(qpos[3]), speed=vel_mps, **extra_creature)
             except Exception as e:
@@ -2382,6 +2632,14 @@ def main():
                     flog_data['sound_direction'] = sensor_data.get('sound_direction', 0.0)
                     flog_data['scents_found'] = visual_env.lights_found if visual_env else sensory_env.scents_found
                     flog_data['olfactory_steering'] = sensor_data.get('olfactory_steering', 0.0)
+                    # Episode Analyzer stats (Meta-Learning Loop Phase A)
+                    flog_data.update(episode_analyzer.stats())
+                    # Strategy Adapter stats (Meta-Learning Loop Phase B)
+                    flog_data.update(strategy_adapter.stats())
+                    # Curiosity Explorer stats (Meta-Learning Loop Phase C)
+                    flog_data.update(curiosity_explorer.stats())
+                    # Hypothesis Generator stats (Meta-Learning Loop Phase D)
+                    flog_data.update(hypothesis_generator.stats())
                     # Run-and-Tumble state machine (v0.4.8)
                     flog_data['rt_state'] = _RT_STATE
                     flog_data['rt_timer'] = _RT_TIMER
@@ -2434,6 +2692,70 @@ def main():
                 flog_data['roll'] = float(_orient[0]) if len(_orient) > 0 else 0.0
                 # Y position (for drift/circle detection)
                 flog_data['y'] = float(world._data.qpos[1])
+                # ============================================================
+                # Phototaxis navigation logging
+                # ============================================================
+                # Ground truth (from MuJoCo physics — what really happened):
+                #   pos_x, pos_y         — creature world position (canonical)
+                #   dist_to_light        — true distance to light body
+                #   heading_to_light     — angle from creature to light (world rad)
+                #   intent_yaw_rate      — current motor steering command
+                #
+                # Brain map (from SpatialMap — what the dog *believes*):
+                #   brain_pos_x/y        — dead-reckoned position
+                #   brain_pos_error      — drift between belief and truth
+                #   brain_landmarks_json — known landmarks with confidence/valence
+                #   brain_visit_grid_b64 — uint8-quantized 20x20 visit heatmap
+                #
+                # On hardware no ground truth exists — only the brain map.
+                # Renderer uses ground truth for the outer minimap, brain
+                # map for the inner "what the dog knows" view.
+                flog_data['pos_x'] = float(world._data.qpos[0])
+                flog_data['pos_y'] = float(world._data.qpos[1])
+                if _lt_body_id >= 0:
+                    _lp_train = world._data.xpos[_lt_body_id][:2]
+                    _to_light_train = _lp_train - np.array([flog_data['pos_x'], flog_data['pos_y']])
+                    flog_data['dist_to_light'] = float(np.linalg.norm(_to_light_train))
+                    flog_data['heading_to_light'] = float(np.arctan2(_to_light_train[1], _to_light_train[0]))
+                else:
+                    flog_data['dist_to_light'] = -1.0
+                    flog_data['heading_to_light'] = -999.0
+                flog_data['intent_yaw_rate'] = float(getattr(creature, '_steering_offset', 0.0))
+                # Brain-map snapshot — what the dog believes about the world.
+                # Cheap to write at log_every interval; landmarks ~1KB,
+                # visit grid ~540 bytes (uint8 + base64). Total ~1.5KB/snapshot.
+                try:
+                    _bx, _by = float(spatial_map.position[0]), float(spatial_map.position[1])
+                    flog_data['brain_pos_x'] = _bx
+                    flog_data['brain_pos_y'] = _by
+                    flog_data['brain_pos_error'] = float(np.sqrt(
+                        (_bx - flog_data['pos_x'])**2 + (_by - flog_data['pos_y'])**2))
+                    _lm_payload = []
+                    for _lm_name, _lm in spatial_map.landmarks.items():
+                        if _lm.confidence < 0.05:
+                            continue
+                        _lm_payload.append({
+                            'name': _lm_name,
+                            'x': float(_lm.position[0]),
+                            'y': float(_lm.position[1]),
+                            'cat': _lm.category,
+                            'conf': round(float(_lm.confidence), 3),
+                            'val': round(float(_lm.valence), 3),
+                            'visits': int(_lm.visit_count),
+                            'last_seen': int(_lm.last_seen_step),
+                        })
+                    flog_data['brain_landmarks_json'] = json.dumps(_lm_payload, separators=(',', ':'))
+                    # Quantize visit grid to uint8 (clamp >=255 visits to 255).
+                    # Most cells visited <50 times so quantization loss is minor.
+                    _vg = spatial_map.visit_grid
+                    _vg_u8 = np.clip(_vg, 0, 255).astype(np.uint8)
+                    flog_data['brain_visit_grid_b64'] = base64.b64encode(_vg_u8.tobytes()).decode('ascii')
+                    flog_data['brain_grid_shape'] = list(_vg_u8.shape)
+                except Exception as _bm_e:
+                    # Never crash the FLOG write because of brain-map serialization.
+                    if not hasattr(main, '_brain_map_warn_shown'):
+                        print(f'  \u26a0 Brain-map serialize failed at step {step}: {_bm_e}')
+                        main._brain_map_warn_shown = True
                 # Gait quality metrics (v0.7.0 Pillar 3)
                 gq = gait_analyzer.stats()
                 for gk, gv in gq.items():
@@ -2545,7 +2867,7 @@ def main():
                 so = getattr(creature, '_steering_offset', 0.0)
                 bd = prev_ball_dist if prev_ball_dist is not None else -1.0
                 vr = vor.stats.get('vor_raw', 0.0) if 'vor' in dir() else 0.0
-                vs = vor.stats.get('vor_smoothed', 0.0) if 'vor' in dir() else 0.0
+                vs = so  # v0.5.0: show actual steering offset (PD or VOR)
                 _cb_sc = cb.inferior_olive._steering_gain_correction if cb else 0.0
                 _tpe = getattr(creature.brain, '_task_prediction_error', 0.0) if hasattr(creature, 'brain') else 0.0
                 line3 += f'  bh:{bh:+.2f}  bd:{bd:.1f}  VOR:{vs:+.2f}  CB:{_cb_sc:+.2f}  TPE:{_tpe:+.2f}'
@@ -2611,6 +2933,8 @@ def main():
     }
     if cb:
         ckpt_data['cerebellum_state'] = cb.state_dict()
+    # v4.2: Spatial Map persistence
+    ckpt_data['spatial_map'] = spatial_map.state_dict()
     torch.save(ckpt_data, ckpt_path)
     print(f'  Checkpoint: {ckpt_path}')
     print(f'  Resume: python scripts/train_v032.py --resume {ckpt_path} --steps 100000')

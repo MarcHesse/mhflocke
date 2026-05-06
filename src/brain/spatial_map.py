@@ -358,3 +358,72 @@ class SpatialMap:
         return (f'SpatialMap(pos=({pos[0]:.2f}, {pos[1]:.2f}), '
                 f'heading={np.degrees(self.heading):.0f}°, '
                 f'{n_lm} landmarks, {expl:.0%} explored)')
+
+    # === Persistence (v4.2) ===
+
+    def state_dict(self) -> dict:
+        """Serialize all state for checkpoint/brain persistence."""
+        landmarks_data = {}
+        for name, lm in self.landmarks.items():
+            landmarks_data[name] = {
+                'position': lm.position.tolist(),
+                'category': lm.category,
+                'confidence': lm.confidence,
+                'valence': lm.valence,
+                'visit_count': lm.visit_count,
+                'last_seen_step': lm.last_seen_step,
+                'last_seen_distance': lm.last_seen_distance,
+            }
+        return {
+            'version': SPATIAL_MAP_VERSION,
+            'world_size': self.world_size,
+            'grid_resolution': self.grid_resolution,
+            'position': self.position.tolist(),
+            'heading': self.heading,
+            'visit_grid': self.visit_grid.tolist(),
+            'landmarks': landmarks_data,
+            'trail': [p.tolist() for p in self._trail],
+            'total_distance': self._total_distance,
+            'max_excursion': self._max_excursion,
+            'step_count': self._step_count,
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restore state from checkpoint/brain persistence."""
+        self.position = np.array(state['position'], dtype=np.float64)
+        self.heading = state['heading']
+        self._total_distance = state.get('total_distance', 0.0)
+        self._max_excursion = state.get('max_excursion', 0.0)
+        self._step_count = state.get('step_count', 0)
+
+        # Grid
+        grid = state.get('visit_grid')
+        if grid is not None:
+            loaded = np.array(grid, dtype=np.float32)
+            if loaded.shape == self.visit_grid.shape:
+                self.visit_grid = loaded
+
+        # Trail
+        trail = state.get('trail', [])
+        self._trail.clear()
+        for p in trail:
+            self._trail.append(np.array(p, dtype=np.float64))
+
+        # Landmarks
+        self.landmarks.clear()
+        for name, lm_data in state.get('landmarks', {}).items():
+            self.landmarks[name] = Landmark(
+                name=name,
+                position=np.array(lm_data['position'], dtype=np.float64),
+                category=lm_data.get('category', 'object'),
+                confidence=lm_data.get('confidence', 1.0),
+                valence=lm_data.get('valence', 0.0),
+                visit_count=lm_data.get('visit_count', 0),
+                last_seen_step=lm_data.get('last_seen_step', 0),
+                last_seen_distance=lm_data.get('last_seen_distance', 0.0),
+            )
+
+        n_lm = len(self.landmarks)
+        expl = self.get_explored_ratio()
+        print(f'  Spatial Map restored: pos=({self.position[0]:.2f}, {self.position[1]:.2f}), '
+              f'{n_lm} landmarks, {expl:.0%} explored, {self._total_distance:.1f}m traveled')

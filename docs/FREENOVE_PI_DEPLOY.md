@@ -1,5 +1,5 @@
 # Freenove Robot Dog — Complete Setup & Deployment Guide
-# MH-FLOCKE Bridge v4.0 — Unified Codebase
+# MH-FLOCKE Bridge v4.4 — Unified Codebase + PID Steering
 # =========================================
 #
 # This guide covers everything from unboxing the Freenove FNK0050 kit
@@ -477,3 +477,109 @@ sudo nmtui → Edit connection → IPv4 → Manual
 #   and their base software (Servo.py, IMU.py, Calibration.py).
 #   URL: https://www.freenove.com/fnk0050
 #   GitHub: https://github.com/Freenove/Freenove_Robot_Dog_Kit_for_Raspberry_Pi
+
+# ============================================================
+# 17. HARDWARE VARIATION & DRIFT (v0.5.1)
+# ============================================================
+#
+# IMPORTANT: Every Freenove unit is different.
+#
+# Due to manufacturing tolerances in servos, weight distribution,
+# and assembly, each robot has a unique mechanical drift profile.
+# Some robots drift left, some right, some barely at all.
+# The drift rate also changes with:
+#   - Walking speed (higher speed = stronger drift)
+#   - Battery level (low battery = inconsistent servo torque)
+#   - Surface (carpet vs hardwood vs tile)
+#   - Temperature (servos change behavior when warm)
+#
+# MH-FLOCKE compensates drift automatically via a PID controller
+# that uses the IMU (MPU6050) for closed-loop yaw correction.
+# No manual calibration is needed — the PID adapts in real-time.
+#
+# Measured drift on the development unit (Marc's robot):
+#   - At rest (no steering): -0.4 deg/s
+#   - Under walking load: -1.5 to -2.0 deg/s
+#   - Direction: rightward (yaw goes negative)
+#
+# Your robot WILL have different drift characteristics.
+# This is expected and the PID handles it automatically.
+#
+# If you want to create a drift profile for simulator training:
+#   1. Run the bridge without phototaxis for 60s:
+#      python3 freenove_bridge.py --gait walk --speed 1.0 --duration 60 --verbose --log-csv ~/drift_test.csv
+#   2. Note the yaw change over 60s from the terminal output
+#   3. Calculate: drift_rate = (final_yaw - initial_yaw) / 60 deg/s
+#   4. Create a JSON profile in creatures/freenove/drift_profiles/
+#      (see measured_marc_01.json as template)
+#   5. Use in simulator: --drift-profile creatures/freenove/drift_profiles/your_profile.json
+
+# ============================================================
+# 18. PHOTOTAXIS MODE (v0.5.1)
+# ============================================================
+#
+# Phototaxis enables light-tracking navigation using the camera.
+# The dog walks toward the brightest light source in view.
+#
+# Requirements:
+#   - Camera module connected (libcamera compatible)
+#   - A bright light source (flashlight, lamp) in a dim room
+#   - Minimum Pi 4 (2GB+ RAM) for SNN + camera processing
+#
+# Basic phototaxis run (CPG only, no SNN learning):
+# python3 freenove_bridge.py --gait walk --phototaxis --speed 1.5 --verbose --duration 60
+#
+# Full SNN + phototaxis (robot learns while navigating):
+# python3 freenove_bridge.py --gait walk --phototaxis --snn --speed 1.5 --verbose --duration 60
+#
+# With CSV logging for analysis:
+# python3 freenove_bridge.py --gait walk --phototaxis --snn --speed 1.5 --verbose --duration 60 --log-csv ~/run.csv
+#
+# Key parameters for phototaxis:
+#   --phototaxis     Enable camera-based light tracking
+#   --snn            Enable SNN + Cerebellum (560 neurons) — MUST be set explicitly!
+#   --gait walk      Start walking — MUST be set explicitly! (default is 'stand')
+#   --speed 1.5      Recommended for phototaxis (larger stride = better steering)
+#   --log-csv FILE   Save sensor data for offline analysis
+#
+# PID steering gains (tuned for hardware, in freenove_bridge.py):
+#   Kp = 0.05        Proportional (yaw error → steering)
+#   Ki = 0.01        Integral (steady-state drift elimination)
+#   Kd = 0.015       Derivative (damping)
+#   max = 0.6        Maximum steering asymmetry
+#
+# NOTE: The simulator uses DIFFERENT gains (Kp=0.08, Ki=0.005)
+# and NEGATES the steering output. Never copy PID code between
+# sim and bridge without checking the sign convention.
+
+# ============================================================
+# 19. UPDATED QUICK REFERENCE (v0.5.1)
+# ============================================================
+#
+# --- Pi commands (v0.5.1) ---
+# python3 freenove_bridge.py --gait stand                                          # Standing test
+# python3 freenove_bridge.py --gait walk --duration 30                              # CPG walk, no SNN
+# python3 freenove_bridge.py --gait walk --snn --fresh --verbose --duration 120     # SNN, fresh brain
+# python3 freenove_bridge.py --gait walk --snn --verbose --duration 120             # SNN, resume brain
+# python3 freenove_bridge.py --gait walk --snn --dashboard --verbose --duration 300 # With web dashboard
+# python3 freenove_bridge.py --gait walk --phototaxis --snn --speed 1.5 --verbose --duration 60  # Phototaxis!
+# python3 freenove_bridge.py --gait walk --phototaxis --snn --speed 1.5 --verbose --duration 60 --log-csv ~/run.csv  # With logging
+#
+# --- Deploy from dev machine (v0.5.1) ---
+# scp src/brain/{__init__,snn_controller,cerebellar_learning,multi_compartment,brain_persistence,topology}.py admin@robot:~/mhflocke/src/brain/
+# scp scripts/freenove_bridge.py admin@robot:~/mhflocke/scripts/
+# scp creatures/freenove/brain/brain.pt admin@robot:~/brain.pt
+#
+# --- Training (dev machine, v0.5.1) ---
+# py -3.11 scripts/train_baby.py --creature-name freenove --phototaxis --steps 50000 --no-llm --hardware-sensors --no-vision --auto-reset 500 --fresh --drift-profile creatures/freenove/drift_profiles/measured_marc_01.json
+#
+# --- SNN Topology (v0.5.1) ---
+#   Input: 48 neurons (12 servo + 2 CPG + 4 IMU + 30 padding)
+#   Output: 12 neurons (1 per actuator)
+#   Granule Cells: 269
+#   Golgi Cells: 47
+#   Purkinje Cells: 24
+#   DCN: 24
+#   Motor Hidden: 136
+#   Total: 560 neurons
+#   Cerebellum expansion: 4000 GrC (Marr-Albus-Ito model)

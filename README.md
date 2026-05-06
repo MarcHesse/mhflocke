@@ -8,6 +8,18 @@
 
 A simulated quadruped learns to walk through a 15-step closed-loop cognitive architecture integrating spiking neural networks, cerebellar forward models, central pattern generators, embodied emotions, and reward-modulated spike-timing-dependent plasticity — no end-to-end RL required.
 
+> **📄 Paper Checkpoints**
+>
+> This repository accompanies two preprints:
+>
+> | Paper | Focus | Preprint | Data |
+> |-------|-------|----------|------|
+> | **Paper 1** — Ablation study | Go2 10-seed validation, B1 vs PPO 3.5× | [aiXiv 260301.000002](https://aixiv.science/abs/aixiv.260301.000002) | [Zenodo 10.5281/zenodo.19336894](https://doi.org/10.5281/zenodo.19336894) |
+> | **Paper 2** — Sim-to-Real | Freenove hardware transfer, Bridge v4.x | *In preparation* | This repo (`creatures/freenove/`) |
+>
+> The code at tag `v0.3.4` corresponds to the ablation results in Paper 1.
+> The code at `main` includes sim-to-real extensions (Bridge, phototaxis, LightMemory).
+
 ## Key Results (10-Seed Validation, Unitree Go2)
 
 | Config | Distance (m) | Falls | Variance |
@@ -59,9 +71,9 @@ The Raspberry Pi 4 runs the **same SNN and cerebellum code** as the MuJoCo simul
 
 - Kit: [Freenove FNK0050](https://www.freenove.com/fnk0050) (~100€)
 - Compute: Raspberry Pi 4 (2GB+ RAM)
-- 12 SG90 servos, PCA9685 driver, MPU6050 IMU
-- SNN: 232 neurons (48 MF + 106 GrC + 18 GoC + 24 PkC + 24 DCN + 12 OUT)
-- Control loop: 29Hz with PyTorch CPU-only
+- 12 SG90 servos, PCA9685 driver, MPU6050 IMU, Pi Camera v2
+- SNN: 560 neurons (48 MF + 269 GrC + 47 GoC + 24 PkC + 24 DCN + 136 MH + 12 OUT)
+- Control loop: ~15 Hz with PyTorch CPU-only
 
 ### Running on Pi
 
@@ -70,23 +82,39 @@ The Raspberry Pi 4 runs the **same SNN and cerebellum code** as the MuJoCo simul
 pip3 install torch --index-url https://download.pytorch.org/whl/cpu --break-system-packages
 
 # Deploy brain code (same src/brain/ as simulator)
-scp -r src/brain/ admin@<pi-hostname>:~/src/brain/
-scp scripts/freenove_bridge.py admin@<pi-hostname>:~/
+scp -r src/brain/ admin@<pi-hostname>:~/mhflocke/src/brain/
+scp scripts/freenove_bridge.py admin@<pi-hostname>:~/mhflocke/scripts/
 
 # Walk with SNN + Cerebellum
-python3 freenove_bridge.py --gait walk --snn --fresh --verbose --duration 120
+python3 scripts/freenove_bridge.py --gait walk --snn --fresh --verbose --duration 120
+
+# Phototaxis: navigate toward a flashlight
+python3 scripts/freenove_bridge.py --gait walk --snn --fresh --phototaxis --verbose --duration 60
 
 # Transfer sim-trained brain
 scp creatures/freenove/brain/brain.pt admin@<pi-hostname>:~/brain.pt
-python3 freenove_bridge.py --gait walk --snn --verbose --duration 120
+python3 scripts/freenove_bridge.py --gait walk --snn --verbose --duration 120
 ```
+
+### Hardware Drift Simulation
+
+Real robots have mechanical asymmetries that cause drift. MH-FLOCKE includes a drift simulation module for testing robustness in the simulator:
+
+```bash
+# Train with measured hardware drift profile
+python scripts/train_baby.py --creature-name freenove --phototaxis \
+    --drift-profile creatures/freenove/drift_profiles/measured_marc_01.json \
+    --hardware-sensors --no-terrain --steps 50000
+```
+
+Drift profiles in `creatures/freenove/drift_profiles/` describe per-robot mechanical characteristics. Create your own profile from hardware measurements.
 
 ### Live Dashboard
 
 The Bridge includes a web dashboard showing real-time SNN activity:
 
 ```bash
-python3 freenove_bridge.py --gait walk --snn --dashboard --verbose --duration 300
+python3 scripts/freenove_bridge.py --gait walk --snn --dashboard --verbose --duration 300
 # Open http://<pi-hostname>:8080
 ```
 
@@ -110,7 +138,7 @@ The architecture operates across nested timescales:
 - **Spinal reflexes** (every step) — posture maintenance, stretch reflexes
 - **Central Pattern Generator** — innate gait patterns, competence-gated blending with learned actor
 - **Cerebellar forward model** — Marr-Albus-Ito framework, prediction error-driven motor corrections
-- **SNN with R-STDP** — 5000+ Izhikevich neurons, reward-modulated spike-timing-dependent plasticity
+- **SNN with R-STDP** — 560+ Izhikevich neurons, reward-modulated spike-timing-dependent plasticity
 - **Cognitive layers** — Global Workspace Theory, embodied emotions, episodic memory, motivational drives
 
 The CPG provides a locomotion prior from step 1. As the SNN actor learns, a competence gate smoothly transitions from 90% CPG to 40% CPG / 60% actor. The creature walks immediately and improves through learning — no random exploration phase required.
@@ -144,7 +172,7 @@ Render training runs with the full dashboard overlay and data-driven sonificatio
 python scripts/render_go2_mujoco.py creatures/go2/v034_.../training_log.bin
 
 # Render Freenove training video
-python scripts/render_freenove.py creatures/freenove/v034_.../training_log.bin
+python scripts/render_freenove.py creatures/freenove/v043_.../training_log.bin
 
 # Add data-driven audio (SNN crackle, CPG heartbeat, cerebellum tones, DA melody)
 python scripts/sonify_flog.py --flog creatures/.../training_log.bin --speed 2 --mux output.mp4
@@ -157,24 +185,30 @@ The Brain3D visualization in rendered videos shows actual SNN topology and spike
 ```
 mhflocke/
 ├── scripts/
-│   ├── train_v032.py           # Main training loop
-│   ├── freenove_bridge.py      # Pi hardware bridge (unified codebase)
-│   ├── freenove_calibrate.py   # Servo calibration tool
-│   ├── render_go2_mujoco.py    # Go2 video renderer
+│   ├── train_v032.py           # Go2 training loop
+│   ├── train_baby.py           # Baby-KI autonomous learning (Freenove)
+│   ├── freenove_bridge.py      # Pi hardware bridge v4.2 (unified codebase)
+│   ├── calibrate_drift.py      # Hardware drift calibration
+│   ├── smoke_test_phototaxis.py # Component integration test
 │   ├── render_freenove.py      # Freenove video renderer
+│   ├── render_go2_mujoco.py    # Go2 video renderer
 │   └── sonify_flog.py          # Data-driven audio from FLOG
 ├── src/
 │   ├── body/                   # MuJoCo creature, terrain, genome
+│   │   ├── hardware_drift.py   # Mechanical drift simulation
+│   │   └── ...
 │   ├── brain/                  # SNN, cerebellum, CPG, cognitive brain
 │   │   ├── snn_controller.py   # Izhikevich SNN with R-STDP
 │   │   ├── cerebellar_learning.py  # Marr-Albus-Ito cerebellum
 │   │   ├── topology.py         # Shared population sizing (no MuJoCo dep)
+│   │   ├── spatial_map.py      # Path integration + landmarks
 │   │   └── ...
 │   ├── viz/                    # Brain3D, dashboard overlay
 │   └── behavior/               # Drive-based behavior planner
 ├── creatures/
 │   ├── go2/                    # Unitree Go2 configuration
 │   └── freenove/               # Freenove Robot Dog configuration
+│       ├── drift_profiles/     # Hardware drift characterization
 │       ├── dashboard/          # Live web dashboard (real SNN data)
 │       ├── profile.json        # Robot profile + SNN topology
 │       └── servo_config.json   # Channel mapping
@@ -195,13 +229,14 @@ Full documentation with architecture details, API references, mathematical formu
 
 25 pages covering: Architecture, SNN Controller, R-STDP, Cerebellum, CPG, Task Prediction Error, Reflexes, Emotions & Drives, Training Pipeline, FLOG Format, World Model, Global Workspace, Body Schema, Memory, Metacognition, and more.
 
-## Paper
+## Papers
 
-> **MH-FLOCKE: Biologically Grounded Embodied Cognition Through a 15-Step Closed-Loop Architecture for Quadruped Locomotion Learning**
->
-> Marc Hesse (2026). Independent Researcher, Potsdam, Germany.
->
-> Preprint: [aixiv.science](https://aixiv.science)
+> **Paper 1 — Ablation Study:**
+> MH-FLOCKE: Biologically Grounded Embodied Cognition Through a 15-Step Closed-Loop Architecture for Quadruped Locomotion Learning.
+> Marc Hesse (2026). Preprint: [aiXiv 260301.000002](https://aixiv.science/abs/aixiv.260301.000002)
+
+> **Paper 2 — Sim-to-Real:** *In preparation.*
+> Freenove Robot Dog hardware transfer, phototaxis navigation, LightMemory spatial recall.
 
 ## Videos
 
@@ -211,23 +246,7 @@ Full documentation with architecture details, API references, mathematical formu
 
 ## Changelog
 
-### v0.4.2 (2026-04-11)
-- **Freenove sim-to-real**: Unified codebase — Pi runs same `src/brain/` as simulator (PyTorch CPU-only). Brain trained in MuJoCo transfers directly to Raspberry Pi 4.
-- **Bridge v4.0**: `freenove_bridge.py` imports `src/brain/` directly. No separate SNN implementation for hardware.
-- **`topology.py`**: Shared cerebellar population computation without MuJoCo dependency. Both simulator and Pi use the same function.
-- **Brain3D visualization**: Population-aware layout driven by actual SNN topology and training data. Layer labels show per-population neuron counts.
-- **FLOG extended**: Training logs store `population_sizes` metadata (per-population neuron counts) for correct visualization.
-- **Live dashboard**: Web-based real-time display of all 6 cerebellar populations with live spike activity on Pi hardware.
-- **Pi deployment**: Complete guide (`docs/FREENOVE_PI_DEPLOY.md`), `requirements-pi.txt`, calibration tool, servo config.
-- **Renderers updated**: Both Freenove and Go2 renderers read population topology from FLOG metadata.
-
-### v0.4.0 (2026-04-06)
-- Initial Freenove integration: Bridge v2.5, IMU support, 8.2m first real-world run
-- Brain persistence across sessions (18,746 steps over 3 sessions)
-
-### v0.3.4 (2026-03-28)
-- Go2 50k training: 8.222m, 0 falls, actor competence 0.847
-- 10-seed ablation: B1 45.15±0.67m vs PPO 12.83±7.78m
+See [CHANGELOG.md](CHANGELOG.md) for full version history.
 
 ## Acknowledgments
 
@@ -257,5 +276,5 @@ The Unitree Go2 model files in `creatures/go2/` are licensed under BSD-3-Clause 
 ## Contact
 
 - Website: [mhflocke.com](https://mhflocke.com)
-- Email: marc@mhflocke.com
+- Email: info@mhflocke.com
 - Reddit: [u/mhflocke](https://reddit.com/u/mhflocke)

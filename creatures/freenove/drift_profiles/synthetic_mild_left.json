@@ -1,0 +1,26 @@
+{
+  "name": "Mild left drift (synthetic)",
+  "description": "Synthetic drift profile for testing. Models a robot with a mild leftward drift — the opposite direction of the measured Freenove unit. Useful for verifying that the VOR calibration and LightMemory work for both drift directions.",
+  "platform": "any",
+
+  "yaw_drift": {
+    "rate_deg_per_s": 1.5,
+    "noise_std_deg_per_s": 0.5,
+    "accelerates_under_load": false,
+    "max_rate_deg_per_s": 3.0
+  },
+
+  "roll_bias": {
+    "mean_deg": 1.2,
+    "noise_std_deg": 0.3
+  },
+
+  "servo_asymmetry": {
+    "FL": 1.04,
+    "FR": 1.00,
+    "RL": 1.02,
+    "RR": 1.00
+  },
+
+  "notes": "Synthetic profile. Positive yaw = counterclockwise = leftward drift. Mirror image of the measured Freenove profile. Tests that the system is direction-agnostic."
+}

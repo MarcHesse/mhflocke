@@ -1,0 +1,42 @@
+{
+  "name": "Freenove FNK0050 — measured (Marc, unit #01)",
+  "description": "Measured drift profile from a real Freenove Robot Dog. Data from multiple hardware runs (2026-04-27 to 2026-05-05). Previous yaw_rate estimate of -0.4 was from LOST-phase only. Full phototaxis runs (2026-05-05) show 1.0-2.0 deg/s under walking load. The higher rate under load is caused by servo asymmetry amplified by CPG gait dynamics.",
+  "measured_date": "2026-05-05",
+  "platform": "Freenove FNK0050",
+
+  "yaw_drift": {
+    "rate_deg_per_s": -1.5,
+    "noise_std_deg_per_s": 0.5,
+    "accelerates_under_load": true,
+    "max_rate_deg_per_s": -2.0,
+    "_history": "-2.0 (v1, inflated by bias), -0.4 (v2, LOST phase only), -1.5 (v3, under walking load)"
+  },
+
+  "roll_bias": {
+    "mean_deg": -1.8,
+    "noise_std_deg": 0.5
+  },
+
+  "servo_asymmetry": {
+    "FL": 1.00,
+    "FR": 1.03,
+    "RL": 1.00,
+    "RR": 1.05
+  },
+
+  "steering_effectiveness": {
+    "_comment": "Measured: deg/s of yaw rotation per mm of CPG Z-offset (legacy, pre-PID)",
+    "yaw_per_mm_deg_s": -0.22,
+    "note": "Z-offset steering replaced by asymmetric stride + PID in v0.5.0"
+  },
+
+  "pid_gains_hardware": {
+    "_comment": "Tuned on hardware 2026-05-05",
+    "Kp": 0.05,
+    "Ki": 0.01,
+    "Kd": 0.015,
+    "max": 0.6
+  },
+
+  "notes": "v3 profile (2026-05-05): drift rate updated from -0.4 to -1.5 based on phototaxis walking runs. Under walking load, servo asymmetry creates stronger drift than at rest. PID with Kp=0.05, Ki=0.01 compensates but needs ~30s for I-term to accumulate."
+}
