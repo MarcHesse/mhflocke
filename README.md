@@ -12,13 +12,13 @@ A simulated quadruped learns to walk through a 15-step closed-loop cognitive arc
 >
 > This repository accompanies two preprints:
 >
-> | Paper | Focus | Preprint | Data |
-> |-------|-------|----------|------|
-> | **Paper 1** — Ablation study | Go2 10-seed validation, B1 vs PPO 3.5× | [aiXiv 260301.000002](https://aixiv.science/abs/aixiv.260301.000002) | [Zenodo 10.5281/zenodo.19336894](https://doi.org/10.5281/zenodo.19336894) |
-> | **Paper 2** — Sim-to-Real | Freenove hardware transfer, Bridge v4.x | *In preparation* | This repo (`creatures/freenove/`) |
+> | Paper | Focus | Tag | Preprint | Data |
+> |-------|-------|-----|----------|------|
+> | **Paper 1** — Ablation study | Go2 10-seed validation, B1 vs PPO 3.5× | `v0.4.1-paper1` | [aiXiv 260301.000002](https://aixiv.science/abs/aixiv.260301.000002) | [Zenodo 10.5281/zenodo.19336894](https://doi.org/10.5281/zenodo.19336894) |
+> | **Paper 2** — Sim-to-Real | Freenove hardware transfer, Bridge v4.4, phototaxis | `v0.4.3-paper2` | [aiXiv 260409.000002](https://aixiv.science/abs/aixiv.260409.000002) | This repo (`creatures/freenove/`) |
 >
-> The code at tag `v0.3.4` corresponds to the ablation results in Paper 1.
-> The code at `main` includes sim-to-real extensions (Bridge, phototaxis, LightMemory).
+> Use `git checkout v0.4.1-paper1` or `git checkout v0.4.3-paper2` to reproduce paper results.
+> The code at `main` includes extensions beyond both papers (PID steering, meta-learning loop, drift profiles).
 
 ## Key Results (10-Seed Validation, Unitree Go2)
 
@@ -89,25 +89,27 @@ scp scripts/freenove_bridge.py admin@<pi-hostname>:~/mhflocke/scripts/
 python3 scripts/freenove_bridge.py --gait walk --snn --fresh --verbose --duration 120
 
 # Phototaxis: navigate toward a flashlight
-python3 scripts/freenove_bridge.py --gait walk --snn --fresh --phototaxis --verbose --duration 60
+python3 scripts/freenove_bridge.py --gait walk --snn --phototaxis --speed 1.5 --verbose --duration 60
 
 # Transfer sim-trained brain
 scp creatures/freenove/brain/brain.pt admin@<pi-hostname>:~/brain.pt
 python3 scripts/freenove_bridge.py --gait walk --snn --verbose --duration 120
 ```
 
-### Hardware Drift Simulation
+### Hardware Drift
 
-Real robots have mechanical asymmetries that cause drift. MH-FLOCKE includes a drift simulation module for testing robustness in the simulator:
+Every Freenove unit has unique mechanical drift due to servo tolerances, weight distribution, and assembly. MH-FLOCKE compensates drift automatically via a PID controller using the IMU for closed-loop yaw correction — no manual calibration needed.
+
+The drift simulation module lets you train in the simulator with realistic hardware drift:
 
 ```bash
 # Train with measured hardware drift profile
 python scripts/train_baby.py --creature-name freenove --phototaxis \
     --drift-profile creatures/freenove/drift_profiles/measured_marc_01.json \
-    --hardware-sensors --no-terrain --steps 50000
+    --hardware-sensors --no-vision --steps 50000 --no-llm --fresh
 ```
 
-Drift profiles in `creatures/freenove/drift_profiles/` describe per-robot mechanical characteristics. Create your own profile from hardware measurements.
+Drift profiles in `creatures/freenove/drift_profiles/` describe per-robot mechanical characteristics. Create your own profile from hardware measurements — see `docs/FREENOVE_PI_DEPLOY.md` Section 17 for instructions.
 
 ### Live Dashboard
 
@@ -140,6 +142,7 @@ The architecture operates across nested timescales:
 - **Cerebellar forward model** — Marr-Albus-Ito framework, prediction error-driven motor corrections
 - **SNN with R-STDP** — 560+ Izhikevich neurons, reward-modulated spike-timing-dependent plasticity
 - **Cognitive layers** — Global Workspace Theory, embodied emotions, episodic memory, motivational drives
+- **Meta-learning loop** — EpisodeAnalyzer, StrategyAdapter, CuriosityExplorer, HypothesisGenerator for autonomous self-improvement
 
 The CPG provides a locomotion prior from step 1. As the SNN actor learns, a competence gate smoothly transitions from 90% CPG to 40% CPG / 60% actor. The creature walks immediately and improves through learning — no random exploration phase required.
 
@@ -187,10 +190,8 @@ mhflocke/
 ├── scripts/
 │   ├── train_v032.py           # Go2 training loop
 │   ├── train_baby.py           # Baby-KI autonomous learning (Freenove)
-│   ├── freenove_bridge.py      # Pi hardware bridge v4.2 (unified codebase)
-│   ├── calibrate_drift.py      # Hardware drift calibration
-│   ├── smoke_test_phototaxis.py # Component integration test
-│   ├── render_freenove.py      # Freenove video renderer
+│   ├── freenove_bridge.py      # Pi hardware bridge v4.4 (unified codebase + PID steering)
+│   ├── render_freenove.py      # Freenove video renderer (dual minimap)
 │   ├── render_go2_mujoco.py    # Go2 video renderer
 │   └── sonify_flog.py          # Data-driven audio from FLOG
 ├── src/
@@ -202,6 +203,9 @@ mhflocke/
 │   │   ├── cerebellar_learning.py  # Marr-Albus-Ito cerebellum
 │   │   ├── topology.py         # Shared population sizing (no MuJoCo dep)
 │   │   ├── spatial_map.py      # Path integration + landmarks
+│   │   ├── episode_analyzer.py # Meta-learning: episode comparison
+│   │   ├── strategy_adapter.py # Meta-learning: parameter adaptation
+│   │   ├── curiosity_hypothesis.py # Meta-learning: exploration + hypothesis generation
 │   │   └── ...
 │   ├── viz/                    # Brain3D, dashboard overlay
 │   └── behavior/               # Drive-based behavior planner
@@ -235,8 +239,9 @@ Full documentation with architecture details, API references, mathematical formu
 > MH-FLOCKE: Biologically Grounded Embodied Cognition Through a 15-Step Closed-Loop Architecture for Quadruped Locomotion Learning.
 > Marc Hesse (2026). Preprint: [aiXiv 260301.000002](https://aixiv.science/abs/aixiv.260301.000002)
 
-> **Paper 2 — Sim-to-Real:** *In preparation.*
-> Freenove Robot Dog hardware transfer, phototaxis navigation, LightMemory spatial recall.
+> **Paper 2 — Sim-to-Real:**
+> MH-FLOCKE: Sim-to-Real Transfer of Biologically Grounded Spiking Neural Networks for Quadruped Locomotion.
+> Marc Hesse (2026). Preprint: [aiXiv 260409.000002](https://aixiv.science/abs/aixiv.260409.000002)
 
 ## Videos
 
