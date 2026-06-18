@@ -45,8 +45,11 @@ lancedb
 # ── System Monitoring ──
 psutil
 
-# ── WebSocket (dashboard + Bittle bridge) ──
-websockets        # async server for the live dashboard (flog_server)
+# ── Web Dashboard (FLOG analysis server) ──
+flask             # HTTP server for the FLOG analysis dashboard (flog_server.py)
+
+# ── WebSocket (live dashboard + Bittle bridge) ──
+websockets        # async server for live dashboard streaming
 websocket-client  # sync client for the Bittle WiFi bridge (bridge_bittle_wifi)
 
 # ── Optional: GPU Physics Batch ──

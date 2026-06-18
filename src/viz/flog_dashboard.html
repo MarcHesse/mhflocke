@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>MH-FLOCKE — FLOG Analysis</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,700;1,8..60,400&display=swap');
+
+  :root {
+    --bg: #0a0e17;
+    --surface: #111827;
+    --surface2: #1a2236;
+    --border: #1e2a3e;
+    --text: #c9d1d9;
+    --text-dim: #5a6370;
+    --cyan: #00d4ff;
+    --gold: #f5a623;
+    --green: #34d058;
+    --red: #ea4a5a;
+    --violet: #a371f7;
+    --orange: #f0883e;
+    --radius: 6px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', 'Consolas', monospace;
+    font-size: 12px;
+    min-height: 100vh;
+  }
+
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+  }
+  .brand {
+    font-family: 'Source Serif 4', serif;
+    font-weight: 700;
+    font-size: 18px;
+    color: var(--cyan);
+    letter-spacing: -0.5px;
+  }
+  .brand span { color: var(--text-dim); font-weight: 400; font-size: 11px; font-family: 'JetBrains Mono', monospace; }
+  .meta { color: var(--text-dim); font-size: 11px; }
+  .meta b { color: var(--text); }
+  #flog-select {
+    margin-left: auto;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 12px;
+    border-radius: var(--radius);
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    max-width: 400px;
+  }
+  #btn-load {
+    background: var(--cyan);
+    color: var(--bg);
+    border: none;
+    padding: 6px 18px;
+    border-radius: var(--radius);
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    letter-spacing: 0.5px;
+  }
+  #btn-load:hover { opacity: 0.85; }
+
+  .stats-bar {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 1px;
+    background: var(--border);
+    margin: 16px 24px;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .stat {
+    background: var(--surface);
+    padding: 14px 12px;
+    text-align: center;
+  }
+  .stat-label {
+    font-size: 8px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+  }
+  .stat-value {
+    font-family: 'Source Serif 4', serif;
+    font-size: 22px;
+    font-weight: 700;
+  }
+  .stat-sub { font-size: 9px; color: var(--text-dim); margin-top: 2px; }
+  .c-cyan { color: var(--cyan); }
+  .c-gold { color: var(--gold); }
+  .c-green { color: var(--green); }
+  .c-red { color: var(--red); }
+  .c-violet { color: var(--violet); }
+  .c-orange { color: var(--orange); }
+
+  .charts {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    padding: 0 24px 24px;
+  }
+  .chart-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .chart-card.full { grid-column: 1 / -1; }
+  .chart-title {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .chart-title .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .chart-wrap { position: relative; height: 180px; }
+  .chart-wrap canvas { width: 100%; height: 100%; }
+  .legend { display: flex; gap: 16px; font-size: 9px; color: var(--text-dim); margin-top: 8px; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 4px; }
+  .legend-dot { width: 10px; height: 3px; border-radius: 1px; }
+
+  .behavior-strip { display: flex; height: 28px; border-radius: 4px; overflow: hidden; margin-top: 8px; cursor: crosshair; }
+  .beh-seg { height: 100%; position: relative; min-width: 2px; transition: opacity 0.15s; }
+  .beh-seg:hover { opacity: 0.7; }
+  .beh-seg:hover::after {
+    content: attr(data-label); position: absolute; top: -24px; left: 50%; transform: translateX(-50%);
+    background: var(--surface2); color: var(--text); padding: 2px 8px; border-radius: 3px;
+    font-size: 9px; white-space: nowrap; pointer-events: none; border: 1px solid var(--border); z-index: 10;
+  }
+
+  .replay-bar {
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    padding: 10px 24px; display: flex; align-items: center; gap: 16px;
+  }
+  .replay-bar button {
+    background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+    padding: 5px 14px; border-radius: var(--radius); font-family: inherit; font-size: 11px; cursor: pointer;
+  }
+  .replay-bar button:hover { border-color: var(--cyan); color: var(--cyan); }
+  .replay-bar button.active { background: var(--cyan); color: var(--bg); border-color: var(--cyan); }
+  .replay-bar .timeline { flex: 1; height: 6px; background: var(--surface2); border-radius: 3px; cursor: pointer; position: relative; }
+  .replay-bar .timeline-fill { height: 100%; background: var(--cyan); border-radius: 3px; transition: width 0.1s linear; }
+  .replay-bar .timeline-handle { position: absolute; top: -5px; width: 14px; height: 14px; background: var(--cyan); border: 2px solid var(--bg); border-radius: 50%; transform: translateX(-50%); cursor: grab; }
+  .replay-bar .speed-select { background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 4px 8px; border-radius: var(--radius); font-family: inherit; font-size: 10px; }
+  .replay-bar .time-display { font-family: 'Source Serif 4', serif; font-size: 14px; color: var(--cyan); min-width: 110px; text-align: center; }
+  .replay-bar .step-display { font-size: 10px; color: var(--text-dim); min-width: 100px; }
+
+  .loading { text-align: center; padding: 80px; color: var(--text-dim); font-size: 13px; }
+  .loading .spinner { display: inline-block; width: 24px; height: 24px; border: 2px solid var(--border); border-top-color: var(--cyan); border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 12px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .live-badge { background: var(--red); color: white; padding: 2px 10px; border-radius: 3px; font-size: 10px; font-weight: 700; letter-spacing: 1px; animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  #btn-live { background: var(--surface2); border: 1px solid var(--border); color: var(--text); padding: 5px 14px; border-radius: var(--radius); font-family: inherit; font-size: 11px; cursor: pointer; margin-left: 8px; }
+  #btn-live:hover { border-color: var(--cyan); color: var(--cyan); }
+  #btn-live.active { background: var(--red); color: white; border-color: var(--red); }
+
+  .events-strip { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin: 0 24px 24px; padding: 16px; }
+  .event-row { display: flex; align-items: center; gap: 12px; padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 11px; }
+  .event-row:last-child { border-bottom: none; }
+  .event-time { color: var(--cyan); font-size: 10px; min-width: 60px; text-align: right; }
+  .event-badge { padding: 2px 8px; border-radius: 3px; font-size: 9px; font-weight: 500; }
+  .badge-start { background: rgba(52,208,88,0.15); color: var(--green); }
+  .badge-freeze { background: rgba(245,166,35,0.15); color: var(--gold); }
+  .badge-other { background: rgba(90,99,112,0.15); color: var(--text-dim); }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">MH-FLOCKE <span>FLOG Analysis</span></div>
+  <div class="meta" id="meta-info">No FLOG loaded</div>
+  <select id="flog-select"><option value="">Select FLOG...</option></select>
+  <button id="btn-load" onclick="loadSelected()">LOAD</button>
+  <button id="btn-live" onclick="toggleLive()">&#9679; LIVE</button>
+  <span id="live-badge" style="display:none" class="live-badge">LIVE</span>
+</header>
+<div class="replay-bar" id="replay-bar" style="display:none">
+  <button id="btn-play" onclick="toggleReplay()">&#9654; Play</button>
+  <button id="btn-reset" onclick="resetReplay()">&#9632; Reset</button>
+  <div class="timeline" id="timeline" onclick="seekTimeline(event)">
+    <div class="timeline-fill" id="timeline-fill" style="width:0%"></div>
+    <div class="timeline-handle" id="timeline-handle" style="left:0%"></div>
+  </div>
+  <select class="speed-select" id="speed-select" onchange="setReplaySpeed()">
+    <option value="0.5">0.5x</option><option value="1" selected>1x</option><option value="2">2x</option><option value="5">5x</option><option value="10">10x</option>
+  </select>
+  <div class="time-display" id="time-display">0 / 0</div>
+  <div class="step-display" id="step-display">Step 0</div>
+</div>
+<div id="content"><div class="loading">Select a FLOG file to analyze</div></div>
+<script>
+let DATA=null;
+const BEHAVIOR_COLORS={walk:'#34d058',trot:'#22d3ee',chase:'#f5a623',sniff:'#a371f7',play:'#f0883e',alert:'#ea4a5a',rest:'#2d3748',motor_babbling:'#5a6370',explore_terrain:'#50d070',walk_hills:'#3b9',balance_slope:'#7ac',cautious_descent:'#c97',sniff_grass:'#b8a','':'#1e2530'};
+function getBehaviorColor(b){return BEHAVIOR_COLORS[b]||'#3a424d';}
+async function init(){try{const r=await fetch('/api/flog/list');const flogs=await r.json();const sel=document.getElementById('flog-select');for(const f of flogs){const o=document.createElement('option');o.value=f.path;o.textContent=`${f.creature}/${f.version} — ${f.task||'unknown'} (${f.size_kb}KB)`;sel.appendChild(o);}if(flogs.length>0){sel.value=flogs[flogs.length-1].path;loadSelected();}}catch(e){document.getElementById('content').innerHTML='<div class="loading" style="color:var(--red)">Cannot connect to server.<br>Start with: python flog_server.py</div>';}}
+async function loadSelected(){const path=document.getElementById('flog-select').value;if(!path)return;document.getElementById('content').innerHTML='<div class="loading"><div class="spinner"></div><div>Loading FLOG...</div></div>';try{const r=await fetch('/api/flog/analyze?path='+encodeURIComponent(path));DATA=await r.json();render();}catch(e){document.getElementById('content').innerHTML=`<div class="loading" style="color:var(--red)">Error: ${e.message}</div>`;}}
+function render(){const d=DATA;const stats=d.stats||[];const events=d.events||[];const last=stats[stats.length-1]||{};const hasBall=stats.some(s=>s.ball_dist>0);const maxDist=Math.max(...stats.map(s=>s.max_distance||0),0);const minBallDist=hasBall?Math.min(...stats.filter(s=>s.ball_dist>0).map(s=>s.ball_dist)):0;const totalFalls=last.falls||0;const finalCompetence=last.actor_competence||0;const finalCPG=last.cpg_weight||0;const finalPCI=last.pci||0;const totalSteps=last.step||0;
+document.getElementById('meta-info').innerHTML=`<b>${d.creature||'?'}</b> &middot; ${d.task||'?'} &middot; ${d.total_frames||stats.length} frames`;
+if(!liveState.active)document.getElementById('replay-bar').style.display='flex';
+replayState.index=0;let html='';
+html+=`<div class="stats-bar"><div class="stat"><div class="stat-label">Max Distance</div><div class="stat-value c-cyan" id="sv-dist">${maxDist.toFixed(2)}m</div><div class="stat-sub">cumulative</div></div><div class="stat"><div class="stat-label">${hasBall?'Min Ball Dist':'Reward'}</div><div class="stat-value c-gold" id="sv-ball">${hasBall?(minBallDist*100).toFixed(1)+'cm':(last.reward||0).toFixed(2)}</div><div class="stat-sub">${hasBall?'closest approach':'final'}</div></div><div class="stat"><div class="stat-label">Actor</div><div class="stat-value c-green" id="sv-actor">${(finalCompetence*100).toFixed(0)}%</div><div class="stat-sub">competence</div></div><div class="stat"><div class="stat-label">CPG</div><div class="stat-value c-orange" id="sv-cpg">${(finalCPG*100).toFixed(0)}%</div><div class="stat-sub">weight</div></div><div class="stat"><div class="stat-label">Falls</div><div class="stat-value ${totalFalls===0?'c-green':'c-red'}" id="sv-falls">${totalFalls}</div><div class="stat-sub">${last.recoveries||0} recoveries</div></div><div class="stat"><div class="stat-label">PCI</div><div class="stat-value c-violet" id="sv-pci">${finalPCI.toFixed(3)}</div><div class="stat-sub">${finalPCI>=0.31?'ABOVE':'below'} 0.31</div></div><div class="stat"><div class="stat-label">Steps</div><div class="stat-value c-cyan" id="sv-steps">${totalSteps.toLocaleString()}</div><div class="stat-sub">${d.n_physics||0} physics</div></div></div>`;
+html+='<div class="charts">';
+if(hasBall){html+=`<div class="chart-card full"><div class="chart-title"><span class="dot" style="background:var(--gold)"></span> Ball Distance Over Training</div><div class="chart-wrap" style="height:220px"><canvas id="c-ball"></canvas></div><div class="legend"><div class="legend-item"><div class="legend-dot" style="background:var(--gold)"></div> ball distance (m)</div><div class="legend-item"><div class="legend-dot" style="background:rgba(52,208,88,0.5)"></div> 1.0m threshold</div><div class="legend-item"><div class="legend-dot" style="background:rgba(234,74,90,0.5)"></div> 0.5m threshold</div></div></div>`;}
+html+=`<div class="chart-card"><div class="chart-title"><span class="dot" style="background:var(--green)"></span> SNN Actor vs CPG</div><div class="chart-wrap"><canvas id="c-competence"></canvas></div><div class="legend"><div class="legend-item"><div class="legend-dot" style="background:var(--green)"></div> actor competence</div><div class="legend-item"><div class="legend-dot" style="background:var(--orange)"></div> CPG weight</div></div></div>`;
+html+=`<div class="chart-card"><div class="chart-title"><span class="dot" style="background:var(--cyan)"></span> ${hasBall?'Task PE &amp; Reward':'Reward &amp; Prediction Error'}</div><div class="chart-wrap"><canvas id="c-reward"></canvas></div><div class="legend"><div class="legend-item"><div class="legend-dot" style="background:var(--cyan)"></div> reward</div>${hasBall?'<div class="legend-item"><div class="legend-dot" style="background:var(--red)"></div> task PE</div>':''}<div class="legend-item"><div class="legend-dot" style="background:rgba(163,113,247,0.5)"></div> prediction error</div></div></div>`;
+html+=`<div class="chart-card"><div class="chart-title"><span class="dot" style="background:#00c8dc"></span> Cerebellum</div><div class="chart-wrap"><canvas id="c-cerebellum"></canvas></div><div class="legend"><div class="legend-item"><div class="legend-dot" style="background:#a050e0"></div> PF&#8594;PkC weight</div><div class="legend-item"><div class="legend-dot" style="background:#50d070"></div> correction</div><div class="legend-item"><div class="legend-dot" style="background:#00c8dc"></div> GrC sparseness</div></div></div>`;
+html+=`<div class="chart-card"><div class="chart-title"><span class="dot" style="background:var(--green)"></span> Stability &amp; Speed</div><div class="chart-wrap"><canvas id="c-stability"></canvas></div><div class="legend"><div class="legend-item"><div class="legend-dot" style="background:var(--green)"></div> upright (0-1)</div><div class="legend-item"><div class="legend-dot" style="background:var(--cyan)"></div> velocity (m/s)</div></div></div>`;
+html+=`<div class="chart-card"><div class="chart-title"><span class="dot" style="background:var(--violet)"></span> Behavior Timeline</div><div class="behavior-strip" id="beh-strip"></div><div class="legend" style="margin-top:12px">${Object.entries(BEHAVIOR_COLORS).filter(([k])=>k).map(([k,v])=>`<div class="legend-item"><div class="legend-dot" style="background:${v}"></div> ${k}</div>`).join('')}</div></div>`;
+html+='</div>';
+if(events.length>0){html+=`<div class="events-strip"><div class="chart-title">Events</div>${events.map(ev=>`<div class="event-row"><div class="event-time">${(ev.timestamp||0).toFixed(1)}s</div><div class="event-badge ${ev.type==='skill_start'?'badge-start':ev.type==='skill_freeze'?'badge-freeze':'badge-other'}">${ev.type||'?'}</div><div>${ev.msg||''}</div></div>`).join('')}</div>`;}
+document.getElementById('content').innerHTML=html;requestAnimationFrame(drawAll);}
+function setupCanvas(id){const c=document.getElementById(id);if(!c)return null;const r=c.parentElement.getBoundingClientRect();const d=window.devicePixelRatio||1;c.width=r.width*d;c.height=r.height*d;c.style.width=r.width+'px';c.style.height=r.height+'px';const ctx=c.getContext('2d');ctx.scale(d,d);ctx.clearRect(0,0,r.width,r.height);return{ctx,w:r.width,h:r.height};}
+function drawGrid(ctx,w,h,mx,steps=4){ctx.strokeStyle='rgba(30,42,62,0.6)';ctx.lineWidth=0.5;ctx.fillStyle='#3a424d';ctx.font='9px JetBrains Mono,monospace';for(let i=0;i<=steps;i++){const y=h-(i/steps)*(h-16)-8;ctx.beginPath();ctx.moveTo(30,y);ctx.lineTo(w,y);ctx.stroke();ctx.fillText(((i/steps)*mx).toFixed(mx<2?2:mx<10?1:0),2,y-2);}}
+function drawLine(ctx,data,w,h,mx,color,lw=1.5,mn=0){if(data.length<2)return;const rng=mx-mn||1;ctx.strokeStyle=color;ctx.lineWidth=lw;ctx.beginPath();for(let i=0;i<data.length;i++){const x=30+(i/(data.length-1))*(w-30);const y=h-((data[i]-mn)/rng)*(h-16)-8;if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);}ctx.stroke();}
+function drawHLine(ctx,w,h,mx,th,color,mn=0){const rng=mx-mn||1;const y=h-((th-mn)/rng)*(h-16)-8;ctx.strokeStyle=color;ctx.lineWidth=1;ctx.setLineDash([4,4]);ctx.beginPath();ctx.moveTo(30,y);ctx.lineTo(w,y);ctx.stroke();ctx.setLineDash([]);}
+function drawArea(ctx,data,w,h,mx,color,alpha=0.15){if(data.length<2)return;ctx.fillStyle=color.replace(')',`,${alpha})`).replace('rgb','rgba');ctx.beginPath();ctx.moveTo(30,h-8);for(let i=0;i<data.length;i++){const x=30+(i/(data.length-1))*(w-30);const y=h-(data[i]/mx)*(h-16)-8;ctx.lineTo(x,y);}ctx.lineTo(30+(w-30),h-8);ctx.closePath();ctx.fill();}
+function drawAll(){const stats=DATA?.stats||[];if(!stats.length)return;const hasBall=stats.some(s=>s.ball_dist>0);if(hasBall)drawBallChart(stats);drawCompetenceChart(stats);drawRewardChart(stats,hasBall);drawCerebellumChart(stats);drawStabilityChart(stats);drawBehaviorStrip(stats);}
+function drawBallChart(stats){const c=setupCanvas('c-ball');if(!c)return;const bd=stats.map(s=>s.ball_dist||0);const mx=Math.min(Math.max(...bd,1),8);drawGrid(c.ctx,c.w,c.h,mx,4);drawHLine(c.ctx,c.w,c.h,mx,1.0,'rgba(52,208,88,0.4)');drawHLine(c.ctx,c.w,c.h,mx,0.5,'rgba(234,74,90,0.4)');const bdc=bd.map(d=>Math.min(d,mx));drawArea(c.ctx,bdc,c.w,c.h,mx,'rgb(245,166,35)',0.08);drawLine(c.ctx,bdc,c.w,c.h,mx,'#f5a623',1.5);}
+function drawCompetenceChart(stats){const c=setupCanvas('c-competence');if(!c)return;drawGrid(c.ctx,c.w,c.h,1.0,4);drawLine(c.ctx,stats.map(s=>s.cpg_weight||0),c.w,c.h,1.0,'#f0883e',1.5);drawLine(c.ctx,stats.map(s=>s.actor_competence||0),c.w,c.h,1.0,'#34d058',2);}
+function drawRewardChart(stats,hasBall){const c=setupCanvas('c-reward');if(!c)return;const rw=stats.map(s=>s.reward||0);const pe=stats.map(s=>s.pred_error||0);const tpe=hasBall?stats.map(s=>s.task_pe||0):[];const mx=Math.max(...[...rw,...pe,...tpe].map(Math.abs),0.1);drawGrid(c.ctx,c.w,c.h,mx,4);drawLine(c.ctx,pe,c.w,c.h,mx,'rgba(163,113,247,0.5)',1);if(hasBall)drawLine(c.ctx,tpe.map(v=>Math.abs(v)),c.w,c.h,mx,'#ea4a5a',1.5);drawLine(c.ctx,rw,c.w,c.h,mx,'#22d3ee',2);}
+function drawCerebellumChart(stats){const c=setupCanvas('c-cerebellum');if(!c)return;const pw=stats.map(s=>s.pf_pkc_weight||0);const cm=stats.map(s=>s.correction_mag||0);const sp=stats.map(s=>s.grc_sparseness||0);const mx=Math.max(...pw,...cm,...sp,0.01);drawGrid(c.ctx,c.w,c.h,mx,4);drawLine(c.ctx,sp,c.w,c.h,mx,'#00c8dc',1);drawLine(c.ctx,cm,c.w,c.h,mx,'#50d070',1.5);drawLine(c.ctx,pw,c.w,c.h,mx,'#a050e0',2);}
+function drawStabilityChart(stats){const c=setupCanvas('c-stability');if(!c)return;const vel=stats.map(s=>s.vel_mps||0);const mx=Math.max(...vel,0.5);drawGrid(c.ctx,c.w,c.h,1.0,4);drawLine(c.ctx,vel.map(v=>v/mx),c.w,c.h,1.0,'#22d3ee',1);drawLine(c.ctx,stats.map(s=>s.upright||0),c.w,c.h,1.0,'#34d058',2);}
+function drawBehaviorStrip(stats){const s=document.getElementById('beh-strip');if(!s||!stats.length)return;s.innerHTML='';for(let i=0;i<stats.length;i++){const b=stats[i].behavior||'';const d=document.createElement('div');d.className='beh-seg';d.style.width=(100/stats.length)+'%';d.style.background=getBehaviorColor(b);d.setAttribute('data-label',`${b} (step ${(stats[i].step||0).toLocaleString()})`);s.appendChild(d);}}
+let replayState={playing:false,index:0,speed:1,timer:null,intervalMs:200};
+function toggleReplay(){replayState.playing?pauseReplay():startReplay();}
+function startReplay(){if(!DATA?.stats?.length)return;replayState.playing=true;document.getElementById('btn-play').innerHTML='&#9646;&#9646; Pause';document.getElementById('btn-play').classList.add('active');replayState.timer=setInterval(replayTick,Math.max(16,replayState.intervalMs/replayState.speed));}
+function pauseReplay(){replayState.playing=false;document.getElementById('btn-play').innerHTML='&#9654; Play';document.getElementById('btn-play').classList.remove('active');clearInterval(replayState.timer);}
+function resetReplay(){pauseReplay();replayState.index=0;updateReplayUI();}
+function setReplaySpeed(){replayState.speed=parseFloat(document.getElementById('speed-select').value);if(replayState.playing){clearInterval(replayState.timer);startReplay();}}
+function seekTimeline(event){const r=document.getElementById('timeline').getBoundingClientRect();const p=Math.max(0,Math.min(1,(event.clientX-r.left)/r.width));replayState.index=Math.floor(p*((DATA?.stats?.length||1)-1));updateReplayUI();}
+function replayTick(){replayState.index++;if(replayState.index>=(DATA?.stats?.length||0)){replayState.index--;pauseReplay();return;}updateReplayUI();}
+function updateReplayUI(){const stats=DATA?.stats||[];const idx=replayState.index;const total=stats.length;const pct=total>1?(idx/(total-1))*100:0;const cur=stats[idx]||{};document.getElementById('timeline-fill').style.width=pct+'%';document.getElementById('timeline-handle').style.left=pct+'%';document.getElementById('time-display').textContent=`${idx+1} / ${total}`;document.getElementById('step-display').textContent=`Step ${(cur.step||0).toLocaleString()}`;const el=id=>document.getElementById(id);el('sv-dist').textContent=((cur.max_distance||0).toFixed(2))+'m';el('sv-actor').textContent=((cur.actor_competence||0)*100).toFixed(0)+'%';el('sv-cpg').textContent=((cur.cpg_weight||0)*100).toFixed(0)+'%';el('sv-falls').textContent=cur.falls||0;el('sv-pci').textContent=(cur.pci||0).toFixed(3);el('sv-steps').textContent=(cur.step||0).toLocaleString();if(cur.ball_dist>0){const minBD=Math.min(...stats.slice(0,idx+1).filter(s=>s.ball_dist>0).map(s=>s.ball_dist));el('sv-ball').textContent=(minBD*100).toFixed(1)+'cm';}}
+let liveState={active:false,timer:null,path:'',statsCount:0,pollMs:3000};
+function toggleLive(){liveState.active?stopLive():startLive();}
+function startLive(){const path=document.getElementById('flog-select').value;if(!path)return;liveState.active=true;liveState.path=path;liveState.statsCount=DATA?.stats?.length||0;document.getElementById('btn-live').classList.add('active');document.getElementById('btn-live').innerHTML='&#9632; STOP';document.getElementById('live-badge').style.display='inline';document.getElementById('replay-bar').style.display='none';livePoll();liveState.timer=setInterval(livePoll,liveState.pollMs);}
+function stopLive(){liveState.active=false;clearInterval(liveState.timer);liveState.timer=null;document.getElementById('btn-live').classList.remove('active');document.getElementById('btn-live').innerHTML='&#9679; LIVE';document.getElementById('live-badge').style.display='none';if(DATA?.stats?.length)document.getElementById('replay-bar').style.display='flex';}
+async function livePoll(){if(!liveState.active)return;try{const url='/api/flog/watch?path='+encodeURIComponent(liveState.path)+'&since='+liveState.statsCount;const r=await fetch(url);const result=await r.json();if(result.error){console.warn('Live poll error:',result.error);return;}const ns=result.stats||[];if(ns.length===0)return;if(!DATA){DATA={stats:[],creature:result.creature||'',task:result.task||'',total_frames:0,n_physics:0,duration_s:0,events:[]};}DATA.stats.push(...ns);liveState.statsCount=result.total;document.getElementById('meta-info').innerHTML=`<b>${DATA.creature||'?'}</b> &middot; ${DATA.task||'?'} &middot; ${DATA.stats.length} stats frames`;render();}catch(e){console.warn('Live poll failed:',e.message);}}
+window.addEventListener('DOMContentLoaded',init);
+window.addEventListener('resize',()=>{if(DATA)requestAnimationFrame(drawAll);});
+</script>
+</body>
+</html>
