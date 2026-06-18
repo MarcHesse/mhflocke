@@ -4,6 +4,9 @@ MH-FLOCKE — Body Schema v0.4.1
 Efference copy comparison for anomaly detection.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 101
+
 import torch
 import numpy as np
 from typing import Dict, Optional, List

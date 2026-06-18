@@ -13,6 +13,9 @@ Author: Marc Hesse
 License: Apache 2.0
 """
 
+__version__ = "0.1.0"
+__logbook__ = 113
+
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional
 import logging

@@ -1,27 +1,54 @@
 # MH-FLOCKE — Python Dependencies
 # =================================
 # Install: pip install -r requirements.txt
+# For GPU (RunPod): bash scripts/runpod_setup.sh
 
 # ── Core Physics ──
-mujoco>=3.0.0
+mujoco>=3.5.0
 numpy
-torch
+scipy
+
+# ── Deep Learning ──
+# CPU-only install (avoids the ~2 GB CUDA build):
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.0.0
 
 # ── Visualization + Video ──
 Pillow
+matplotlib
+networkx
 
-# ── Serialization ──
+# ── Mesh Generation ──
+numpy-stl
+
+# ── Config / Serialization ──
+pyyaml
+orjson
 msgpack
 
-# ── Dashboard ──
-flask
-
-# ── SNN Performance (optional, speeds up neural sim) ──
+# ── SNN Performance ──
 numba
+
+# ── NLP / Brain ──
+sentence-transformers
+spacy
+
+# ── LLM Adapters ──
+litellm
+
+# ── Web Search ──
+ddgs
+
+# ── Vector Database ──
+lancedb
 
 # ── System Monitoring ──
 psutil
 
-# ── Optional: video rendering ──
-# soundfile        # sonification (WAV export)
-# pedalboard       # audio mastering (reverb, compression)
+# ── WebSocket (dashboard + Bittle bridge) ──
+websockets        # async server for the live dashboard (flog_server)
+websocket-client  # sync client for the Bittle WiFi bridge (bridge_bittle_wifi)
+
+# ── Optional: GPU Physics Batch ──
+# jax[cuda12]
+# mujoco-mjx

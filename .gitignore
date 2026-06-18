@@ -58,3 +58,11 @@ NEXT_CHAT_BRIEFING.md
 CLAUDE_CODE_BRIEFING.md
 PAPER2_REVIEW_ISSUES.md
 issue_*.md
+
+# v0.8.0 Bittle-only: keep raw STL set + run/telemetry artifacts out
+# (only meshes_obj/*.obj ship; STL raw set stays private)
+creatures/*/meshes/
+creatures/*/bridge_*/
+*.stl
+*.bin
+*.bat

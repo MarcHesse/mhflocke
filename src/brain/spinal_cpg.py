@@ -11,6 +11,10 @@ v0.5.0: Steering changed from abduction-offset to asymmetric hip amplitude.
         reticulospinal neurons modulate left/right stride amplitude.
 """
 
+__version__ = "0.5.0"     # module version (MAJOR.MINOR; MAJOR = contract change)
+__logbook__ = 26          # mh-logbuch module entry
+__status__  = "active"    # active | veraltet | neu
+
 import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Optional

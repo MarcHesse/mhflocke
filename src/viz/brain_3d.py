@@ -15,6 +15,9 @@ v0.4.2: Uses REAL population sizes from SNN topology.
   Positions: deterministic layout based on population sizes (golden ratio spacing).
 """
 
+__version__ = "0.4.2"
+__logbook__ = 153
+
 import math
 import numpy as np
 from typing import Optional, Tuple, Dict, List

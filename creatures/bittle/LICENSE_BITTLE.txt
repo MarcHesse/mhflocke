@@ -1,0 +1,23 @@
+Bittle MJCF Model for MH-FLOCKE
+================================
+
+Based on three sources:
+
+1. gravesreid/mujoco_mpc_bittle
+   License: Apache License 2.0
+   Source: https://github.com/gravesreid/mujoco_mpc_bittle
+   OBJ meshes and MJCF structure adapted from bittle_scaled.xml
+
+2. PetoiCamp/ros_opencat
+   License: MIT License
+   Copyright (c) 2018 Toshinori Kitamura
+   Source: https://github.com/PetoiCamp/ros_opencat
+   Original URDF model of Petoi Bittle
+
+3. PetoiCamp/OpenCatEsp32
+   License: MIT License
+   Copyright (c) 2021 Rongzhong Li
+   Source: https://github.com/PetoiCamp/OpenCatEsp32
+   Gait and pose data extracted from InstinctBittleESP.h
+
+All licenses are compatible with MH-FLOCKE's Apache 2.0 license.

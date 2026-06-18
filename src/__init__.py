@@ -4,6 +4,7 @@
 # Copyright 2026 Marc Hesse
 # Licensed under Apache License 2.0
 
-__version__ = '0.4.1'
+__version__ = '0.8.0'
+__logbook__ = 159
 __author__ = 'Marc Hesse'
 __license__ = 'Apache-2.0'

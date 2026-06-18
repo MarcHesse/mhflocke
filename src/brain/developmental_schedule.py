@@ -4,6 +4,9 @@ MH-FLOCKE — Developmental Schedule v0.4.1
 Motor babbling and developmental stage progression.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 114
+
 import numpy as np
 from dataclasses import dataclass
 

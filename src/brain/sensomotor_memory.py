@@ -4,6 +4,9 @@ MH-FLOCKE — Sensorimotor Memory v0.4.1
 Episodic memory for sensorimotor sequences.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 106
+
 import torch
 import numpy as np
 from typing import List, Optional, Tuple, Dict

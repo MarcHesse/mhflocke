@@ -4,6 +4,9 @@ MH-FLOCKE — Scene Instruction v0.4.1
 Scene configuration: drive biases, behavior weights, terrain.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 139
+
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 

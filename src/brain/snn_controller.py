@@ -16,6 +16,10 @@ v0.5.0: Per-population Izhikevich (a,b,c,d) parameters + recovery variable u.
          Issue #106: Performance optimizations (torch.no_grad, pre-alloc).
 """
 
+__version__ = "0.5.2"     # module version (MAJOR.MINOR; MAJOR = contract change)
+__logbook__ = 22          # mh-logbuch module entry
+__status__  = "active"    # active | veraltet | neu
+
 import torch
 import torch.nn as nn
 from typing import Dict, Optional, Tuple, List

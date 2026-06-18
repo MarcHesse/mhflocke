@@ -4,6 +4,9 @@ MH-FLOCKE — Astrocyte Gate v0.4.1
 Calcium-based gating for synaptogenesis.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 100
+
 import numpy as np
 
 

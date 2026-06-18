@@ -26,6 +26,9 @@ Dependencies:
     pip install numpy soundfile
 """
 
+__version__ = "1.0"
+__logbook__ = 156
+
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 

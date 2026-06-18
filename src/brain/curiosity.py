@@ -4,6 +4,9 @@ MH-FLOCKE — Curiosity Drive v0.4.1
 Intrinsic motivation from world model prediction error.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 94
+
 import numpy as np
 from dataclasses import dataclass
 

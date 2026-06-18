@@ -4,6 +4,9 @@ MH-FLOCKE — Behavior Planner v0.4.1
 Drive-based behavior selection from situation assessment.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 136
+
 import numpy as np
 from typing import Dict, Optional, Tuple
 from dataclasses import dataclass

@@ -1,0 +1,12 @@
+{
+    "oscillator": "mogli",
+    "n_actuators": 12,
+    "joints_per_leg": 3,
+    "abd_amplitude": 0.0,
+    "hip_amplitude": 0.50,
+    "knee_amplitude": 0.35,
+    "maturation_steps": 500,
+    "frequency": 1.0,
+    "knee_bias": -0.35,
+    "notes": "Bittle CPG: knee_bias=-0.35 shifts knees into OpenCat operating range. 12-output CPG with abd=0."
+}

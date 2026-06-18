@@ -4,6 +4,9 @@ MH-FLOCKE — Spinal Reflexes v0.4.1
 Postural reflexes, stretch reflexes, and crossed extension coordination.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 119
+
 import numpy as np
 from dataclasses import dataclass
 from enum import Enum
@@ -110,8 +113,16 @@ class SpinalSegments:
         self._initialized = False
 
         # Build tone profile for all actuators
-        profile = (self.config.tone_profile_4j if self.jpleg == 4
-                   else self.config.tone_profile_3j)
+        if self.jpleg == 4:
+            profile = self.config.tone_profile_4j
+        elif self.jpleg == 3:
+            profile = self.config.tone_profile_3j
+        elif self.jpleg == 2:
+            # Bittle: shoulder (=hip) + knee, no abduction
+            profile = (self.config.tone_profile_3j[0],   # hip tone
+                       self.config.tone_profile_3j[1])   # knee tone
+        else:
+            profile = tuple([0.0] * self.jpleg)
         self._tone_baseline = np.tile(profile, self.n_legs)
 
         # Stats

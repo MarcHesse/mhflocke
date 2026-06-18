@@ -40,6 +40,9 @@ Biology:
 Author: MH-FLOCKE Level 15 v0.7.0
 """
 
+__version__ = "0.1.0"
+__logbook__ = 98
+
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple

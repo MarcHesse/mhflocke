@@ -4,6 +4,9 @@ MH-FLOCKE — Evolved Plasticity v0.4.1
 Genome-encoded plasticity rules for SNN learning.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 116
+
 import numpy as np
 from typing import Optional
 from dataclasses import dataclass

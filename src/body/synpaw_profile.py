@@ -4,6 +4,9 @@ MH-FLOCKE — Synpaw Profile v0.4.1
 Morphology profile loader for creature configurations.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 127
+
 import json
 import copy
 import time

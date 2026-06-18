@@ -4,6 +4,9 @@ MH-FLOCKE — MJCF Generator v0.4.1
 Procedural MuJoCo XML generation from genome.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 131
+
 import numpy as np
 from typing import Tuple, Dict, List, Optional
 from dataclasses import dataclass

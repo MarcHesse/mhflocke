@@ -4,6 +4,9 @@ MH-FLOCKE — Theory of Mind v0.4.1
 Multi-compartment SNN module for modeling other agents.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 110
+
 import torch
 import numpy as np
 from typing import Dict, Optional, List

@@ -4,6 +4,9 @@ MH-FLOCKE — Motivational Drives v0.4.1
 Survival, exploration, comfort, and social drives for behavior selection.
 """
 
+__version__ = "0.7.0"
+__logbook__ = 96
+
 import numpy as np
 from typing import Dict, Optional
 from dataclasses import dataclass

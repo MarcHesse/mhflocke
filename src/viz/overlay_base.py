@@ -4,6 +4,9 @@ MH-FLOCKE — Overlay Base v0.4.1
 Font loading and base utilities for dashboard rendering.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 150
+
 import math
 import numpy as np
 from typing import Tuple, Optional

@@ -4,6 +4,9 @@ MH-FLOCKE — Embodied Closed Loop v0.4.1
 Targeted synaptogenesis from embodied experience.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 117
+
 import numpy as np
 import torch
 from typing import Optional, Dict, List, Deque

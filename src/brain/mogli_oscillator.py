@@ -77,6 +77,10 @@ Named after the project's test dog Mogli.
 Ref: Brown 1911, Grillner 2003, Ijspeert 2008, Rybak 2006
 """
 
+__version__ = "0.3.3"     # module version (MAJOR.MINOR; MAJOR = contract change)
+__logbook__ = 25          # mh-logbuch module entry
+__status__  = "active"    # active | veraltet | neu
+
 import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict

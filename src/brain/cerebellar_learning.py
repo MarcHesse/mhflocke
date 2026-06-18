@@ -9,6 +9,10 @@ v0.5.0: DCN Rebound Burst Detection (Issue #104).
          Ref: Gauck & Jaeger 2000, Aizenman & Bhatt 2003.
 """
 
+__version__ = "0.5.0"     # module version (MAJOR.MINOR; MAJOR = contract change)
+__logbook__ = 23          # mh-logbuch module entry
+__status__  = "active"    # active | veraltet | neu
+
 import torch
 import numpy as np
 from dataclasses import dataclass

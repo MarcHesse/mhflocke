@@ -6,29 +6,71 @@
 
 **Biologically Grounded Embodied Cognition for Quadruped Locomotion Learning**
 
-A simulated quadruped learns to walk through a 15-step closed-loop cognitive architecture integrating spiking neural networks, cerebellar forward models, central pattern generators, embodied emotions, and reward-modulated spike-timing-dependent plasticity — no end-to-end RL required.
+A simulated quadruped learns to refine its locomotion through a 15-step closed-loop cognitive
+architecture that integrates spiking neural networks, a cerebellar forward model, a central
+pattern generator, embodied emotions, and reward-modulated spike-timing-dependent plasticity
+(R-STDP). The system is a **hybrid by design**: an innate CPG provides the base gait, and the
+SNN + cerebellum learn to refine it on top — closer to how a young animal's brainstem and
+spinal cord come pre-wired while the cerebellum and cortex calibrate them with experience.
+
+> **This `main` branch is the Bittle-only public release (v0.8.0).** The active hardware
+> platform is the [Petoi Bittle X](https://www.petoi.com/products/petoi-bittle-x). Earlier
+> platforms (Unitree Go2 ablation, Freenove sim-to-real) are preserved as paper checkpoints —
+> see the tags below.
 
 > **📄 Paper Checkpoints**
 >
-> This repository accompanies two preprints:
+> | Paper | Focus | Tag | Preprint |
+> |-------|-------|-----|----------|
+> | **Paper 1** — Ablation study | Go2 10-seed validation, B vs PPO | `v0.4.1-paper1` | [aiXiv 260301.000002](https://aixiv.science/abs/aixiv.260301.000002) |
+> | **Paper 2** — Sim-to-Real | Freenove hardware transfer, Bridge v4.4, phototaxis | `v0.4.3-paper2` | [aiXiv 260409.000002](https://aixiv.science/abs/aixiv.260409.000002) |
 >
-> | Paper | Focus | Tag | Preprint | Data |
-> |-------|-------|-----|----------|------|
-> | **Paper 1** — Ablation study | Go2 10-seed validation, B1 vs PPO 3.5× | `v0.4.1-paper1` | [aiXiv 260301.000002](https://aixiv.science/abs/aixiv.260301.000002) | [Zenodo 10.5281/zenodo.19336894](https://doi.org/10.5281/zenodo.19336894) |
-> | **Paper 2** — Sim-to-Real | Freenove hardware transfer, Bridge v4.4, phototaxis | `v0.4.3-paper2` | [aiXiv 260409.000002](https://aixiv.science/abs/aixiv.260409.000002) | This repo (`creatures/freenove/`) |
->
-> Use `git checkout v0.4.1-paper1` or `git checkout v0.4.3-paper2` to reproduce paper results.
-> The code at `main` includes extensions beyond both papers (PID steering, meta-learning loop, drift profiles).
+> Use `git checkout v0.4.1-paper1` or `git checkout v0.4.3-paper2` to reproduce the paper
+> results with their original Go2 / Freenove assets. A further snapshot of the last `main`
+> that still carried both platforms is tagged `v0.7-go2-freenove-final`.
 
-## Key Results (10-Seed Validation, Unitree Go2)
+## What is hardwired vs. learned
 
-| Config | Distance (m) | Falls | Variance |
-|--------|-------------|-------|----------|
-| **B1 SNN+Cerebellum** | **45.15 ± 0.67** | **0** | **σ = 0.67** |
-| A1 CPG only | 40.73 ± 6.14 | 0.2 | σ = 6.14 |
-| PPO Baseline | 12.83 ± 7.78 | 0 | σ = 7.78 |
+MH-FLOCKE is explicitly a hybrid. Being clear about which parts are programmed and which parts
+adapt is central to the project:
 
-**3.5x faster learning than PPO with 11.6x lower variance** at identical sample budgets (50k steps). Zero falls across all 10 seeds.
+**Hardwired (programmed, present "from birth"):** the CPG gait oscillator, spinal reflexes
+(righting, cross-extension, terrain), vestibular/light reflexes, the run-and-tumble navigation
+state machine, the drive/behaviour planner, and the competence gate. The SNN does **not**
+generate the gait — the CPG does.
+
+**Learned (adapts through experience):** the SNN weights via R-STDP, the cerebellar correction
+(Marr-Albus-Ito, climbing-fibre error → Purkinje learning), the CPG→actor handoff as the actor
+proves competence, Hebbian co-activation, world-model prediction, emotional state, and
+activity-dependent synaptogenesis.
+
+The interesting behaviour lives in the interaction: reflexes provide the scaffold, learning
+refines it. This is a design principle, not a limitation.
+
+## Architecture
+
+A 15-step closed-loop processing cycle runs at every simulation timestep:
+
+```
+SENSE → BODY SCHEMA → WORLD MODEL → EMOTIONS → MEMORY →
+DRIVES → GLOBAL WORKSPACE → METACOGNITION → CONSISTENCY →
+COMBINED REWARD → R-STDP LEARNING → SYNAPTOGENESIS →
+HEBBIAN → DREAM MODE → NEUROMODULATION
+```
+
+Operating across nested timescales:
+
+- **Spinal reflexes** (every step) — posture maintenance, stretch reflexes
+- **Central Pattern Generator** — innate gait, competence-gated blending with the learned actor
+- **Cerebellar forward model** — Marr-Albus-Ito framework, prediction-error-driven corrections
+- **SNN with R-STDP** — Izhikevich neurons (≈535–756 depending on sensor configuration), reward-modulated STDP
+- **Cognitive layers** — Global Workspace Theory, embodied emotions, episodic memory, drives
+- **Meta-learning loop** — EpisodeAnalyzer, StrategyAdapter, CuriosityExplorer, HypothesisGenerator
+
+The CPG provides a locomotion prior from step 1. As the SNN actor learns, a competence gate
+transitions from ≈90% CPG toward ≈40% CPG / 60% actor — the CPG floor stays at 40% by design,
+so the SNN refines the gait rather than replacing it. The creature walks from the start and
+improves through learning.
 
 ## Quick Start
 
@@ -40,15 +82,11 @@ cd mhflocke
 # Install dependencies
 pip install -r requirements.txt
 
-# Train Go2 on flat terrain (10k steps, ~20 min)
-python scripts/train_v032.py \
-    --creature-name go2 \
-    --scene "walk on flat meadow" \
-    --steps 10000 \
-    --skip-morph-check \
-    --no-terrain \
-    --auto-reset 500 \
-    --seed 42
+# Train the Bittle on flat ground (OpenCat Trot gait + SNN refinement)
+# --neural-cpg is REQUIRED for the Bittle: it loads the OpenCat Trot controller.
+# Without it the SpinalCPG path is used and the robot falls immediately.
+python scripts/train_baby.py --creature-name bittle --neural-cpg \
+    --scene flat --steps 25000 --hardware-sensors --fresh --snn-substeps 10
 
 # Analyze training data
 python flog_server.py
@@ -58,214 +96,179 @@ python flog_server.py
 ### Requirements
 
 - Python 3.11+
-- MuJoCo (included via `mujoco` pip package)
+- MuJoCo (via the `mujoco` pip package)
 - PyTorch
 - NumPy, msgpack
 
-## Freenove Robot Dog — Sim-to-Real
+## Hardware — Petoi Bittle X
 
-MH-FLOCKE runs on real hardware using the Freenove Robot Dog Kit (FNK0050, ~100€).
-The Raspberry Pi 4 runs the **same SNN and cerebellum code** as the MuJoCo simulator — one codebase, two platforms. A brain trained in simulation transfers directly to the real robot.
-
-### Hardware Setup
-
-- Kit: [Freenove FNK0050](https://www.freenove.com/fnk0050) (~100€)
-- Compute: Raspberry Pi 4 (2GB+ RAM)
-- 12 SG90 servos, PCA9685 driver, MPU6050 IMU, Pi Camera v2
-- SNN: 560 neurons (48 MF + 269 GrC + 47 GoC + 24 PkC + 24 DCN + 136 MH + 12 OUT)
-- Control loop: ~15 Hz with PyTorch CPU-only
-
-### Running on Pi
+MH-FLOCKE targets the [Petoi Bittle X](https://www.petoi.com/products/petoi-bittle-x)
+(BiBoard V0, ESP32, MPU6050 IMU, 8 leg servos). The brain runs on a host PC and talks to the
+robot over a WiFi WebSocket, using the **same `src/brain/` code** as the simulator — one
+codebase, two platforms. OpenCat's onboard balance is disabled so the motor commands pass
+through unmodified.
 
 ```bash
-# Install PyTorch CPU-only
-pip3 install torch --index-url https://download.pytorch.org/whl/cpu --break-system-packages
-
-# Deploy brain code (same src/brain/ as simulator)
-scp -r src/brain/ admin@<pi-hostname>:~/mhflocke/src/brain/
-scp scripts/freenove_bridge.py admin@<pi-hostname>:~/mhflocke/scripts/
-
-# Walk with SNN + Cerebellum
-python3 scripts/freenove_bridge.py --gait walk --snn --fresh --verbose --duration 120
-
-# Phototaxis: navigate toward a flashlight
-python3 scripts/freenove_bridge.py --gait walk --snn --phototaxis --speed 1.5 --verbose --duration 60
-
-# Transfer sim-trained brain
-scp creatures/freenove/brain/brain.pt admin@<pi-hostname>:~/brain.pt
-python3 scripts/freenove_bridge.py --gait walk --snn --verbose --duration 120
+# Connect over WiFi and verify the IMU / control channel
+# (replace <robot-ip> with the Bittle's address on your network)
+python scripts/bridge_bittle_wifi.py --ip <robot-ip>
 ```
 
-### Hardware Drift
+Transferring a sim-trained SNN brain to the real robot is part of the active sim-to-real work
+(see the note below); the bridge exposes `--snn` and `--cerebellum` for it. Closed-loop yaw
+correction uses the IMU so the robot compensates mechanical drift, surface, and battery level.
 
-Every Freenove unit has unique mechanical drift due to servo tolerances, weight distribution, and assembly. MH-FLOCKE compensates drift automatically via a PID controller using the IMU for closed-loop yaw correction — no manual calibration needed.
+> **Sim-to-real note.** Closing the simulation-to-hardware gap on the Bittle is an active
+> research arc, not a solved benchmark. Distances and roll amplitudes differ between sim and
+> hardware, and the public code reflects work in progress rather than a finished result.
 
-The drift simulation module lets you train in the simulator with realistic hardware drift:
+## Published validation (Paper 1, Unitree Go2)
 
-```bash
-# Train with measured hardware drift profile
-python scripts/train_baby.py --creature-name freenove --phototaxis \
-    --drift-profile creatures/freenove/drift_profiles/measured_marc_01.json \
-    --hardware-sensors --no-vision --steps 50000 --no-llm --fresh
-```
+The 10-seed ablation in Paper 1 was run on the Unitree Go2 (reproducible at tag
+`v0.4.1-paper1`):
 
-Drift profiles in `creatures/freenove/drift_profiles/` describe per-robot mechanical characteristics. Create your own profile from hardware measurements — see `docs/FREENOVE_PI_DEPLOY.md` Section 17 for instructions.
+| Config | Distance (m) | Falls | Variance |
+|--------|-------------|-------|----------|
+| **B — SNN + Cerebellum** | **45.15 ± 0.67** | **0** | σ = 0.67 |
+| A — CPG only | 40.73 ± 6.14 | 0.2 | σ = 6.14 |
+| PPO baseline | 12.83 ± 7.78 | 0 | σ = 7.78 |
 
-### Live Dashboard
+**How to read this honestly.** The B configurations train on an external, shaped reward —
+`R_ext(t) = 0.8·v_forward + 0.2·upright` — applied via R-STDP on top of the innate CPG gait.
+The large gap over PPO is **mostly the CPG locomotion prior**, not the SNN learning to walk by
+itself: the SNN + cerebellum's own marginal contribution over CPG-only (A → B) is about **+11%
+distance**, alongside a collapse in seed-to-seed variance (σ 6.14 → 0.67) and zero falls. The
+phrases "from scratch", "no reward shaping", and "no end-to-end RL" do **not** apply to these
+numbers.
 
-The Bridge includes a web dashboard showing real-time SNN activity:
-
-```bash
-python3 scripts/freenove_bridge.py --gait walk --snn --dashboard --verbose --duration 300
-# Open http://<pi-hostname>:8080
-```
-
-Displays all 6 cerebellar populations with live spike data, servo angles, competence gate, and neuromodulation levels.
-
-Full deployment guide: [docs/FREENOVE_PI_DEPLOY.md](docs/FREENOVE_PI_DEPLOY.md)
-
-## Architecture
-
-MH-FLOCKE implements a 15-step closed-loop processing cycle that runs at every simulation timestep (200 Hz):
-
-```
-SENSE → BODY SCHEMA → WORLD MODEL → EMOTIONS → MEMORY →
-DRIVES → GLOBAL WORKSPACE → METACOGNITION → CONSISTENCY →
-COMBINED REWARD → R-STDP LEARNING → SYNAPTOGENESIS →
-HEBBIAN → DREAM MODE → NEUROMODULATION
-```
-
-The architecture operates across nested timescales:
-
-- **Spinal reflexes** (every step) — posture maintenance, stretch reflexes
-- **Central Pattern Generator** — innate gait patterns, competence-gated blending with learned actor
-- **Cerebellar forward model** — Marr-Albus-Ito framework, prediction error-driven motor corrections
-- **SNN with R-STDP** — 560+ Izhikevich neurons, reward-modulated spike-timing-dependent plasticity
-- **Cognitive layers** — Global Workspace Theory, embodied emotions, episodic memory, motivational drives
-- **Meta-learning loop** — EpisodeAnalyzer, StrategyAdapter, CuriosityExplorer, HypothesisGenerator for autonomous self-improvement
-
-The CPG provides a locomotion prior from step 1. As the SNN actor learns, a competence gate smoothly transitions from 90% CPG to 40% CPG / 60% actor. The creature walks immediately and improves through learning — no random exploration phase required.
+A separate **intrinsic-reward line** (`train_baby.py --reward-blend 0`) learns from body signals
+alone — vestibular comfort, curiosity, proprioceptive prediction error — with no external
+reward. That configuration trades distance for autonomy and is **not** the source of the
+benchmark numbers above.
 
 ## Ablation Design
 
 Three configurations isolate component contributions:
 
-- **A (CPG only)** — Spinal reflexes + vestibular. The anencephalic baseline.
-- **B (SNN + Cerebellum)** — Adds R-STDP learning, cerebellar forward model, drives, behavior planner.
-- **C (Full system)** — All 15 cognitive steps including GWT, metacognition, dream mode, synaptogenesis.
-
-Each tested on flat and hilly terrain, 10 random seeds, yielding 80 total runs.
+- **A (CPG only)** — spinal reflexes + vestibular. The minimal baseline.
+- **B (SNN + Cerebellum)** — adds R-STDP learning, cerebellar forward model, drives, behaviour planner.
+- **C (Full system)** — all 15 cognitive steps including GWT, metacognition, dream mode, synaptogenesis.
 
 ## FLOG Dashboard
 
-The training logger writes binary FLOG files (msgpack-encoded frames at 10-step intervals). The standalone dashboard provides real-time analysis:
+The training logger writes binary FLOG files (msgpack-encoded frames at 10-step intervals). The
+standalone dashboard provides real-time analysis:
 
 ```bash
 python flog_server.py
 ```
 
-Features: distance/velocity charts, fall detection, CPG/actor weight tracking, cerebellar prediction error, behavioral state timeline.
+Features: distance/velocity charts, fall detection, CPG/actor weight tracking, cerebellar
+prediction error, behavioural state timeline.
 
 ## Video Rendering
 
 Render training runs with the full dashboard overlay and data-driven sonification:
 
 ```bash
-# Render Go2 training video
-python scripts/render_go2_mujoco.py creatures/go2/v034_.../training_log.bin
+# Render a Bittle training video
+python scripts/render_bittle.py creatures/bittle/<run>/training_log.bin
 
-# Render Freenove training video
-python scripts/render_freenove.py creatures/freenove/v043_.../training_log.bin
+# Instagram-format reel
+python scripts/render_insta_reel_bittle.py creatures/bittle/<run>/training_log.bin
 
 # Add data-driven audio (SNN crackle, CPG heartbeat, cerebellum tones, DA melody)
-python scripts/sonify_flog.py --flog creatures/.../training_log.bin --speed 2 --mux output.mp4
+python scripts/sonify_flog.py --flog creatures/bittle/<run>/training_log.bin --speed 2 --mux output.mp4
 ```
 
-The Brain3D visualization in rendered videos shows actual SNN topology and spike activity from the training data, with correct population sizes for each creature.
+> **Requires `ffmpeg`** on your PATH (external tool, not a pip package) for video
+> encoding and audio muxing — install via `apt install ffmpeg`, `brew install ffmpeg`,
+> or the Windows build from [ffmpeg.org](https://ffmpeg.org/download.html).
+
+The Brain3D visualization in rendered videos shows actual SNN topology and spike activity from
+the training data.
 
 ## Project Structure
 
 ```
 mhflocke/
 ├── scripts/
-│   ├── train_v032.py           # Go2 training loop
-│   ├── train_baby.py           # Baby-KI autonomous learning (Freenove)
-│   ├── freenove_bridge.py      # Pi hardware bridge v4.4 (unified codebase + PID steering)
-│   ├── render_freenove.py      # Freenove video renderer (dual minimap)
-│   ├── render_go2_mujoco.py    # Go2 video renderer
-│   └── sonify_flog.py          # Data-driven audio from FLOG
+│   ├── train_baby.py               # Baby-KI training loop (intrinsic + shaped reward)
+│   ├── bridge_bittle_wifi.py       # Bittle hardware bridge (WiFi/WebSocket, same src/brain/)
+│   ├── render_bittle.py            # Bittle training-video renderer (dashboard overlay)
+│   ├── render_insta_reel_bittle.py # Instagram-format renderer
+│   └── sonify_flog.py              # Data-driven audio from FLOG
 ├── src/
-│   ├── body/                   # MuJoCo creature, terrain, genome
-│   │   ├── hardware_drift.py   # Mechanical drift simulation
+│   ├── body/                       # MuJoCo creature, terrain, OpenCat balance/controller
+│   │   ├── bittle.py               # Bittle body model
+│   │   ├── hardware_drift.py       # Mechanical-drift simulation (robot-agnostic, no-op without profile)
 │   │   └── ...
-│   ├── brain/                  # SNN, cerebellum, CPG, cognitive brain
-│   │   ├── snn_controller.py   # Izhikevich SNN with R-STDP
+│   ├── brain/                      # SNN, cerebellum, CPG, cognitive brain
+│   │   ├── snn_controller.py       # Izhikevich SNN with R-STDP
 │   │   ├── cerebellar_learning.py  # Marr-Albus-Ito cerebellum
-│   │   ├── topology.py         # Shared population sizing (no MuJoCo dep)
-│   │   ├── spatial_map.py      # Path integration + landmarks
-│   │   ├── episode_analyzer.py # Meta-learning: episode comparison
-│   │   ├── strategy_adapter.py # Meta-learning: parameter adaptation
+│   │   ├── spinal_cpg.py           # Central pattern generator
+│   │   ├── topology.py             # Shared population sizing (no MuJoCo dep)
+│   │   ├── spatial_map.py          # Path integration + landmarks
+│   │   ├── episode_analyzer.py     # Meta-learning: episode comparison
+│   │   ├── strategy_adapter.py     # Meta-learning: parameter adaptation
 │   │   ├── curiosity_hypothesis.py # Meta-learning: exploration + hypothesis generation
 │   │   └── ...
-│   ├── viz/                    # Brain3D, dashboard overlay
-│   └── behavior/               # Drive-based behavior planner
+│   ├── bridge/                     # Task parsing, scene generation, curriculum
+│   ├── viz/                        # Brain3D, dashboard overlay
+│   └── behavior/                   # Drive-based behaviour planner
 ├── creatures/
-│   ├── go2/                    # Unitree Go2 configuration
-│   └── freenove/               # Freenove Robot Dog configuration
-│       ├── drift_profiles/     # Hardware drift characterization
-│       ├── dashboard/          # Live web dashboard (real SNN data)
-│       ├── profile.json        # Robot profile + SNN topology
-│       └── servo_config.json   # Channel mapping
+│   └── bittle/                     # Petoi Bittle X configuration
+│       ├── bittle.xml              # MJCF (measured inertia)
+│       ├── scene_mhflocke.xml      # Training scene
+│       ├── profile.json            # Robot profile + SNN topology
+│       ├── cpg_config.json         # Evolved CPG parameters
+│       └── meshes_obj/             # Collision/visual meshes
 ├── docs/
-│   ├── FREENOVE_PI_DEPLOY.md   # Complete Pi deployment guide
-│   ├── ARCHITECTURE.md
 │   └── FLOG_FORMAT.md
-├── flog_server.py              # FLOG analysis + dashboard
-├── requirements.txt            # Simulator dependencies
-└── requirements-pi.txt         # Raspberry Pi dependencies (CPU-only)
+├── flog_server.py                  # FLOG analysis + dashboard
+├── requirements.txt                # Simulator dependencies
+└── requirements-pi.txt             # On-device dependencies (CPU-only)
 ```
 
 ## Documentation
 
-Full documentation with architecture details, API references, mathematical formulations, and biological background:
+Full documentation with architecture details, API references, mathematical formulations, and
+biological background:
 
 **[mhflocke.com/docs](https://mhflocke.com/docs/)**
-
-25 pages covering: Architecture, SNN Controller, R-STDP, Cerebellum, CPG, Task Prediction Error, Reflexes, Emotions & Drives, Training Pipeline, FLOG Format, World Model, Global Workspace, Body Schema, Memory, Metacognition, and more.
 
 ## Papers
 
 > **Paper 1 — Ablation Study:**
-> MH-FLOCKE: Biologically Grounded Embodied Cognition Through a 15-Step Closed-Loop Architecture for Quadruped Locomotion Learning.
-> Marc Hesse (2026). Preprint: [aiXiv 260301.000002](https://aixiv.science/abs/aixiv.260301.000002)
+> MH-FLOCKE: Biologically Grounded Embodied Cognition Through a 15-Step Closed-Loop Architecture
+> for Quadruped Locomotion Learning. Marc Hesse (2026).
+> Preprint: [aiXiv 260301.000002](https://aixiv.science/abs/aixiv.260301.000002)
 
 > **Paper 2 — Sim-to-Real:**
-> MH-FLOCKE: Sim-to-Real Transfer of Biologically Grounded Spiking Neural Networks for Quadruped Locomotion.
-> Marc Hesse (2026). Preprint: [aiXiv 260409.000002](https://aixiv.science/abs/aixiv.260409.000002)
+> MH-FLOCKE: Sim-to-Real Transfer of Biologically Grounded Spiking Neural Networks for Quadruped
+> Locomotion. Marc Hesse (2026).
+> Preprint: [aiXiv 260409.000002](https://aixiv.science/abs/aixiv.260409.000002)
 
 ## Videos
 
-- [Freenove Robot Dog — SNN on Real Hardware](https://www.youtube.com/watch?v=7iN8tB2xLHI)
-- [Video #3: Go2 Ball Interaction](https://www.youtube.com/watch?v=Jo7UM6pEFMg)
 - [YouTube Channel: @mhflocke](https://www.youtube.com/@mhflocke)
 
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for full version history.
 
-## Acknowledgments
-
-The Unitree Go2 MJCF model is from the [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) project (Google DeepMind), derived from [Unitree Robotics](https://www.unitree.com/) URDF descriptions. Licensed under BSD-3-Clause — see `creatures/go2/LICENSE_unitree_go2`.
-
-## Named After
-
-MH-FLOCKE is named after the author's late dog Flocke. The current test pilot is Mogli.
-
 ## License
 
 This project is licensed under the [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0).
 
-The Unitree Go2 model files in `creatures/go2/` are licensed under BSD-3-Clause — see `creatures/go2/LICENSE_unitree_go2`.
+The Unitree Go2 MJCF model used in the Paper 1 ablation (available at tag `v0.4.1-paper1`) is
+from the [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) project (Google
+DeepMind), derived from [Unitree Robotics](https://www.unitree.com/) URDF descriptions and
+licensed under BSD-3-Clause.
+
+## Named After
+
+MH-FLOCKE is named after the author's late dog Flocke. The current test pilot is Mogli.
 
 ## Citation
 

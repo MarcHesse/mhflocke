@@ -4,6 +4,9 @@ MH-FLOCKE — Embodied Emotions v0.4.1
 Valence-arousal emotional system derived from body state signals.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 107
+
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 from collections import deque

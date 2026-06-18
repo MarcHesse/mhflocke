@@ -22,6 +22,9 @@ v0.4.2: Baby-KI support (2026-04-21).
 v0.4.1: original 15-step architecture.
 """
 
+__version__ = "0.4.6"
+__logbook__ = 122
+
 import torch
 import numpy as np
 from typing import Dict, Optional

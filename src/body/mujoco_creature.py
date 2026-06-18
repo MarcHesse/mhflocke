@@ -21,6 +21,10 @@ v0.5.1: Continuous topology scaling (Issue #142).
   - Hardware-matched sensor encoding (--hardware-sensors flag)
 """
 
+__version__ = "0.5.2"     # module version (MAJOR.MINOR; MAJOR = contract change)
+__logbook__ = 53          # mh-logbuch module entry
+__status__  = "active"     # active | veraltet | neu
+
 import torch
 import numpy as np
 from typing import Dict, List, Optional
@@ -187,6 +191,50 @@ def encode_sensory_hardware_matched(joint_angles_rad, cpg_phase, imu_data,
     return s
 
 
+def encode_sensory_bittle(joint_angles_rad, cpg_phase, imu_data,
+                         obstacle_distance: float = -1.0):
+    """
+    Encode Bittle sensor data for hardware-matched SNN input.
+
+    Layout (19 channels, Bittle 8-DOF):
+      Channels  0-7:   8 joint angles (rad/pi + 0.5 -> [0,1])
+      Channels  8-9:   2 CPG phase (sin, cos)
+      Channels 10-13:  4 IMU (pitch/90, roll/90, yaw/180, upright)
+      Channel  14:     1 ultrasonic proximity
+      Channels 15-18:  4 padding (zeros)
+    = 19 channels total
+
+    Same structure as Freenove encode_sensory_hardware_matched() but
+    adapted for 8-DOF (2 joints per leg, no abduction).
+    """
+    s = np.zeros(19, dtype=np.float32)
+
+    # Channels 0-7: Joint angles normalized to [0, 1]
+    n_joints = min(8, len(joint_angles_rad))
+    for i in range(n_joints):
+        s[i] = np.clip(joint_angles_rad[i] / np.pi + 0.5, 0.0, 1.0)
+
+    # Channels 8-9: CPG phase
+    s[8:10] = cpg_phase
+
+    # Channels 10-13: IMU (same as Freenove encoding)
+    s[10] = imu_data['pitch'] / 90.0 * 0.5 + 0.5
+    s[11] = imu_data['roll'] / 90.0 * 0.5 + 0.5
+    s[12] = imu_data['yaw'] / 180.0 * 0.5 + 0.5
+    s[13] = imu_data['upright']
+
+    # Channel 14: Ultrasonic proximity
+    _US_MAX_RANGE = 4.0
+    if obstacle_distance < 0 or obstacle_distance >= _US_MAX_RANGE:
+        s[14] = 0.0
+    else:
+        proximity = 1.0 - min(obstacle_distance / _US_MAX_RANGE, 1.0)
+        s[14] = float(np.clip(proximity ** 0.5, 0.0, 1.0))
+
+    # Channels 15-18: padding
+    return s
+
+
 def extract_imu_from_mujoco(qpos):
     """
     Extract IMU-equivalent data from MuJoCo qpos quaternion.
@@ -276,6 +324,16 @@ class MuJoCoCreature:
         # Sensor/Motor Dimensionen
         self._n_sensor_channels = self._count_sensor_channels()
         self._n_motors = world.n_actuators if hasattr(world, '_model') and world._model else genome.n_joints
+
+        # qpos/qvel offset: actuated joints may not start at index 7
+        # (e.g. Bittle has a non-actuated neck joint before leg joints).
+        # Formula: offset = nq - n_actuators (actuated joints are last in qpos).
+        if hasattr(world, '_model') and world._model:
+            self._qpos_offset = world._model.nq - self._n_motors
+            self._qvel_offset = world._model.nv - self._n_motors
+        else:
+            self._qpos_offset = 7   # default: free joint (3 pos + 4 quat)
+            self._qvel_offset = 6   # default: free joint (3 vel + 3 angvel)
         self.n_input_neurons = self._n_sensor_channels * self.NEURONS_PER_SENSOR
         self.n_output_neurons = self._n_motors * self.NEURONS_PER_MOTOR
 
@@ -341,7 +399,7 @@ class MuJoCoCreature:
         """Extract raw sensor values in hardware-matched layout for CognitiveBrain."""
         # Use the same 48-channel layout as the Pi Bridge
         n_act = self.world.n_actuators if hasattr(self.world, '_model') else 12
-        joint_angles_rad = self.world._data.qpos[7:7+n_act] if hasattr(self.world, '_data') else np.zeros(n_act)
+        joint_angles_rad = self.world._data.qpos[self._qpos_offset:self._qpos_offset+n_act] if hasattr(self.world, '_data') else np.zeros(n_act)
         
         # CPG phase from creature state
         cpg_cmd = getattr(self, '_cpg_cmd', None)
@@ -355,7 +413,9 @@ class MuJoCoCreature:
         # IMU from MuJoCo quaternion
         imu_data = extract_imu_from_mujoco(self.world._data.qpos)
         
-        sensory = encode_sensory_hardware_matched(joint_angles_rad, cpg_phase_val, imu_data)
+        sensory = encode_sensory_bittle(joint_angles_rad, cpg_phase_val, imu_data) \
+            if n_act <= 8 else \
+            encode_sensory_hardware_matched(joint_angles_rad, cpg_phase_val, imu_data)
         return sensory.tolist()
 
     # ================================================================
@@ -462,7 +522,7 @@ class MuJoCoCreature:
         transferred to the Raspberry Pi without sensor mismatch.
         """
         n_act = self.world.n_actuators if hasattr(self.world, '_model') else 12
-        joint_angles_rad = self.world._data.qpos[7:7+n_act] if hasattr(self.world, '_data') else np.zeros(n_act)
+        joint_angles_rad = self.world._data.qpos[self._qpos_offset:self._qpos_offset+n_act] if hasattr(self.world, '_data') else np.zeros(n_act)
         
         # CPG phase input (stored by training loop)
         cpg_phase_val = getattr(self, '_cpg_phase_input', np.array([0.0, 1.0], dtype=np.float32))
@@ -475,10 +535,15 @@ class MuJoCoCreature:
         # Store for training loop access (reward computation)
         self._obstacle_distance = obstacle_dist
         
-        # Encode in Bridge-identical format (now includes Channel 18)
-        sensory = encode_sensory_hardware_matched(
-            joint_angles_rad, cpg_phase_val, imu_data,
-            obstacle_distance=obstacle_dist)
+        # Encode in Bridge-identical format — dispatch by DOF
+        if n_act <= 8:
+            sensory = encode_sensory_bittle(
+                joint_angles_rad, cpg_phase_val, imu_data,
+                obstacle_distance=obstacle_dist)
+        else:
+            sensory = encode_sensory_hardware_matched(
+                joint_angles_rad, cpg_phase_val, imu_data,
+                obstacle_distance=obstacle_dist)
         
         # Population Coding: 48 values -> n_input SNN neurons
         n = self.snn.config.n_neurons
@@ -631,19 +696,26 @@ class MuJoCoCreature:
         # Spinal segments: muscle tone + stretch reflex + Golgi tendon organ
         spinal_seg = getattr(self, '_spinal_segments', None)
         if spinal_seg is not None:
-            joint_pos = self.world._data.qpos[7:7+n_act] if hasattr(self.world, '_data') else np.zeros(n_act)
+            joint_pos = self.world._data.qpos[self._qpos_offset:self._qpos_offset+n_act] if hasattr(self.world, '_data') else np.zeros(n_act)
             controls = spinal_seg.process(
                 np.array(controls), joint_pos,
                 sim_dt=getattr(self, '_sim_dt', 0.005)
             ).tolist()
         else:
-            controls = [np.clip(c, -1.0, 1.0) for c in controls]
+            # Clip to actuator range (not [-1,1] which truncates position actuators)
+            pd = getattr(self, '_pd_controller', None)
+            if pd is not None and pd.get('native_position', False):
+                lo = pd['lo']
+                hi = pd['hi']
+                controls = [float(np.clip(c, lo[i], hi[i])) for i, c in enumerate(controls)]
+            else:
+                controls = [np.clip(c, -1.0, 1.0) for c in controls]
 
         self.world.set_controls(np.array(controls))
         self._last_controls = controls
         self._energy_spent += sum(abs(c) for c in controls)
 
-        # PD Controller hook: convert position targets -> torques
+        # PD Controller hook: convert position targets -> torques (or native position)
         pd = getattr(self, '_pd_controller', None)
         if pd is not None:
             n = self.world.n_actuators
@@ -656,11 +728,23 @@ class MuJoCoCreature:
             _urgency = max(0.0, min(1.0, (1.0 - _upright) / 2.0))
             scale = base_scale + (fallen_scale - base_scale) * _urgency
             target_q = standing + raw_ctrl * scale
-            current_q = self.world._data.qpos[7:7+n]
-            current_v = self.world._data.qvel[6:6+n]
-            torques = pd['kp'] * (target_q - current_q) - pd['kd'] * current_v
-            torques = np.clip(torques, pd['lo'], pd['hi'])
-            self.world._data.ctrl[:n] = torques
+            if pd.get('native_position', False):
+                # Position actuators: send target angles directly.
+                # raw_ctrl contains DELTAS from standing.
+                # Apply OpenCat balance corrections if available.
+                balance = getattr(self, '_opencat_balance', None)
+                if balance is not None:
+                    quat = self.world._data.qpos[3:7]
+                    balance_corr = balance.compute(quat)
+                    target_q = target_q + balance_corr[:n]
+                self.world._data.ctrl[:n] = np.clip(target_q, pd['lo'], pd['hi'])
+            else:
+                # Torque actuators: PD controller
+                current_q = self.world._data.qpos[self._qpos_offset:self._qpos_offset+n]
+                current_v = self.world._data.qvel[self._qvel_offset:self._qvel_offset+n]
+                torques = pd['kp'] * (target_q - current_q) - pd['kd'] * current_v
+                torques = np.clip(torques, pd['lo'], pd['hi'])
+                self.world._data.ctrl[:n] = torques
 
     # ================================================================
     # STEP (Sense-Think-Act)
@@ -674,7 +758,10 @@ class MuJoCoCreature:
         if self._start_position is None:
             self._init_start_pos()
 
+        import time as _t
+
         # 1. Sense
+        _t0 = _t.perf_counter()
         sensor_data = {}
         try:
             sensor_data = self.world.get_sensor_data(self.body_name)
@@ -683,15 +770,20 @@ class MuJoCoCreature:
 
         # 2. Sense -> SNN Encoding
         sensor_input = self.get_sensor_input()
+        _t1 = _t.perf_counter()
 
         # 3. Think
         output_spikes = self.think(sensor_input)
+        _t2 = _t.perf_counter()
 
         # 4. Act
+        _t_act0 = _t.perf_counter()
         self.apply_motor_output(output_spikes)
+        _t_act1 = _t.perf_counter()
 
         # 5. Physik-Step (MuJoCo)
         self.world.step()
+        _t3 = _t.perf_counter()
 
         # 6. Cognitive cycle
         brain_result = {}
@@ -710,11 +802,22 @@ class MuJoCoCreature:
                 is_fallen=self.is_fallen(),
                 extra_sensor_data=extra_sensor_data,
             )
+        _t4 = _t.perf_counter()
 
         # 7. Tracking
         self._step_count += 1
         if not self.is_fallen():
             self._standing_steps += 1
+
+        # Profile logging (every 5000 steps)
+        if self._step_count % 5000 == 0:
+            print(f'  [CREATURE PROFILE step {self._step_count}] '
+                  f'sense:{(_t1-_t0)*1000:.1f}ms  '
+                  f'think:{(_t2-_t1)*1000:.1f}ms  '
+                  f'act:{(_t_act1-_t_act0)*1000:.1f}ms  '
+                  f'mujoco:{(_t3-_t_act1)*1000:.1f}ms  '
+                  f'brain:{(_t4-_t3)*1000:.1f}ms  '
+                  f'extract:{(_t3-_t2)*1000-((_t_act1-_t_act0)+(_t3-_t_act1))*1000:.1f}ms')
 
         return {
             'step': self._step_count,
@@ -800,7 +903,8 @@ class MuJoCoCreatureBuilder:
     """Factory: Genome -> MuJoCoCreature (komplett verdrahtet)."""
 
     @staticmethod
-    def _compute_cerebellar_populations(n_hidden: int, n_actuators: int):
+    def _compute_cerebellar_populations(n_hidden: int, n_actuators: int,
+                                        motor_hidden_ratio: float = 0.30):
         """
         Compute cerebellar population sizes scaled to available hidden neurons.
         
@@ -823,8 +927,8 @@ class MuJoCoCreatureBuilder:
         fixed_neurons = n_purkinje + n_dcn  # e.g. 24 + 24 = 48 for 12 actuators
         available = max(4, n_hidden - fixed_neurons)
         
-        # Reserve 30% as free hidden layer (motorcortex / motor_hidden)
-        free_hidden_ratio = 0.30
+        # Reserve motor_hidden_ratio as free hidden layer (motorcortex)
+        free_hidden_ratio = motor_hidden_ratio
         cerebellum_budget = max(4, int(available * (1.0 - free_hidden_ratio)))
         
         # Split cerebellum budget: 85% GrC (expansion), 15% GoC (inhibition)
@@ -909,15 +1013,15 @@ class MuJoCoCreatureBuilder:
         # Standard: compute from MuJoCo sensor channels + population coding.
         
         if hardware_sensors and profile_n_input is not None:
-            # Hardware mode: n_input from profile (e.g. 48 for Freenove)
+            # Hardware mode with profile: n_input from profile (e.g. 48 for Freenove)
             n_input = profile_n_input
             n_sensor_channels = n_input  # 1:1, no population coding expansion
-        elif profile_n_input is not None:
-            # Profile-driven: trust the profile's n_input
-            n_input = profile_n_input
-            n_sensor_channels = n_input
+        elif hardware_sensors:
+            # Hardware mode without profile: compute from creature
+            n_sensor_channels = 48  # default Freenove layout
+            n_input = n_sensor_channels
         else:
-            # Standard: compute sensor channels from MuJoCo
+            # Standard mode: ALWAYS compute from MuJoCo, ignore profile n_input
             n_vision = 0 if no_vision else 2
             n_sensor_channels = 12 + 2 * world.n_actuators + n_vision
             n_input = n_sensor_channels * MuJoCoCreature.NEURONS_PER_SENSOR
@@ -928,21 +1032,22 @@ class MuJoCoCreatureBuilder:
         else:
             n_output = world.n_actuators * MuJoCoCreature.NEURONS_PER_MOTOR
 
+        _mh_ratio = snn_profile.get('motor_hidden_ratio', 0.30) if profile else 0.30
+
         # Cerebellar populations scaled to n_hidden
         cb_pops = MuJoCoCreatureBuilder._compute_cerebellar_populations(
-            n_hidden_neurons, world.n_actuators)
+            n_hidden_neurons, world.n_actuators, motor_hidden_ratio=_mh_ratio)
         n_granule = cb_pops['n_granule']
         n_golgi = cb_pops['n_golgi']
         n_purkinje = cb_pops['n_purkinje']
         n_dcn = cb_pops['n_dcn']
 
         # v0.7.0: Motor hidden neurons (motorcortex)
-        # These are FREE hidden neurons for R-STDP motor pattern learning.
-        # They are NOT part of the cerebellum and NOT protected from R-STDP.
-        # Biology: primary motor cortex learns voluntary movement patterns,
-        # cerebellum provides error correction on top.
+        # Ratio configurable via profile (default 30%).
+        # Set to 0 for creatures using firmware-level gaits (OpenCat)
+        # where SNN only needs cerebellar corrections.
         n_cerebellum = n_granule + n_golgi + n_purkinje + n_dcn
-        n_motor_hidden = max(0, n_hidden_neurons - n_cerebellum)
+        n_motor_hidden = max(0, n_hidden_neurons - n_cerebellum) if _mh_ratio > 0 else 0
 
         # Total neuron count (now includes motor_hidden)
         total_neurons = n_input + n_output + n_granule + n_golgi + n_purkinje + n_dcn + n_motor_hidden
@@ -1049,13 +1154,24 @@ class MuJoCoCreatureBuilder:
         snn.connect_populations('golgi_cells', 'granule_cells',
                                 prob=0.02, weight_range=(0.2, 0.4))
 
-        # MF -> GoC
+        # MF -> GoC (scale for small input populations)
+        _mf_goc_prob = max(0.1, 3.0 / max(1, len(mf_ids)))
         snn.connect_populations('mossy_fibers', 'golgi_cells',
-                                prob=0.1, weight_range=(0.5, 1.0))
+                                prob=_mf_goc_prob, weight_range=(0.5, 1.0))
 
-        # GrC -> legacy output
+        # GrC -> legacy output (scale prob for small populations)
+        _grc_out_prob = max(0.02, 3.0 / max(1, n_granule))
         snn.connect_populations('granule_cells', 'output',
-                                prob=0.02, weight_range=(0.3, 0.8))
+                                prob=_grc_out_prob, weight_range=(0.3, 0.8))
+
+        # Direct input -> output (corticospinal fast path)
+        # Bypasses cerebellar expansion for immediate motor corrections.
+        # Biology: corticospinal tract provides direct cortex->motoneuron
+        # connections alongside the slower cerebellar pathway.
+        # Critical for small SNNs where cerebellar expansion dilutes signal.
+        _in_out_prob = max(0.2, 5.0 / max(1, len(mf_ids)))
+        snn.connect_populations('input', 'output',
+                                prob=_in_out_prob, weight_range=(0.8, 1.5))
 
         # v0.7.0: Motor hidden connectivity (motorcortex)
         # Input -> motor_hidden: sparse sensory feed
@@ -1063,11 +1179,14 @@ class MuJoCoCreatureBuilder:
         # These connections are the ones R-STDP can modify!
         if n_motor_hidden > 0:
             # MF -> motor_hidden (sensory input)
+            # Scale prob so each MH neuron gets ~5 input connections minimum
+            _mf_mh_prob = max(0.1, 5.0 / max(1, len(mf_ids)))
             snn.connect_populations('mossy_fibers', 'motor_hidden',
-                                    prob=0.1, weight_range=(0.5, 1.5))
+                                    prob=_mf_mh_prob, weight_range=(0.5, 1.5))
             # motor_hidden -> output (motor drive)
+            _mh_out_prob = max(0.15, 5.0 / max(1, n_motor_hidden))
             snn.connect_populations('motor_hidden', 'output',
-                                    prob=0.15, weight_range=(0.3, 1.0))
+                                    prob=_mh_out_prob, weight_range=(0.8, 1.5))
 
             # v0.5.2: Bilateral symmetry for MH->Output weights (Issue #145)
             # Biology: bilateral animals have symmetric motor innervation at birth.
@@ -1076,23 +1195,35 @@ class MuJoCoCreatureBuilder:
             # Drift analysis (2026-04-20): CPG-only walks straight (7m/50k),
             # SNN runs drift consistently. All seeds show same rightward pattern.
             # Fix: average MH->Output weights between bilateral leg pairs.
-            # Actuator layout: FL(0-2), FR(3-5), RL(6-8), RR(9-11)
-            # Pairs: FL<->FR (joints 0<->3, 1<->4, 2<->5)
-            #        RL<->RR (joints 6<->9, 7<->10, 8<->11)
-            _bilateral_pairs = [(0, 3), (1, 4), (2, 5),   # FL <-> FR
-                                (6, 9), (7, 10), (8, 11)]  # RL <-> RR
+            # Actuator layout depends on creature:
+            #   12-DOF: FL(0-2), FR(3-5), RL(6-8), RR(9-11)
+            #   8-DOF:  RF(0-1), LF(2-3), RR(4-5), LR(6-7)
+            _jpleg = world.n_actuators // 4
+            if _jpleg == 3:  # 12-DOF: FL<->FR, RL<->RR
+                _bilateral_pairs = [(0, 3), (1, 4), (2, 5),
+                                    (6, 9), (7, 10), (8, 11)]
+            elif _jpleg == 2:  # 8-DOF: RF<->LF, RR<->LR
+                _bilateral_pairs = [(0, 2), (1, 3),
+                                    (4, 6), (5, 7)]
+            else:
+                _bilateral_pairs = []
             _out_start = out_ids[0].item()
             _n_per_joint = max(1, n_output // world.n_actuators)
             _idx = snn._weight_indices
             _w = snn._weight_values
+            # Only average MH->Output weights; GrC->Output and Input->Output
+            # have different source populations and must not be mixed in.
+            _mh_set = set(mh_ids.tolist())
+            _is_mh_source = torch.tensor(
+                [s.item() in _mh_set for s in _idx[0]], device=device)
             for _left_j, _right_j in _bilateral_pairs:
                 _left_neurons = list(range(_out_start + _left_j * _n_per_joint,
                                            _out_start + (_left_j + 1) * _n_per_joint))
                 _right_neurons = list(range(_out_start + _right_j * _n_per_joint,
                                             _out_start + (_right_j + 1) * _n_per_joint))
                 for _ln, _rn in zip(_left_neurons, _right_neurons):
-                    _left_mask = (_idx[1] == _ln)
-                    _right_mask = (_idx[1] == _rn)
+                    _left_mask = (_idx[1] == _ln) & _is_mh_source
+                    _right_mask = (_idx[1] == _rn) & _is_mh_source
                     if _left_mask.any() and _right_mask.any():
                         _avg = (_w[_left_mask].mean() + _w[_right_mask].mean()) / 2.0
                         _w[_left_mask] = _avg
@@ -1137,10 +1268,11 @@ class MuJoCoCreatureBuilder:
             # unified fast path in step() (no boolean masking overhead).
             # Biology: alpha motoneurons fire tonically — RS is appropriate.
             snn.set_izhikevich_params('output', a=0.02, b=0.2, c=-65, d=8)  # RS
-            # Input neurons: RS. These only receive external current and spike
-            # when driven. The dynamics don't matter much for input — but having
-            # them on Izhikevich enables the all_izh fast path in step().
-            snn.set_izhikevich_params('input', a=0.02, b=0.2, c=-65, d=8)  # RS
+            # Input neurons: Fast Spiking (thalamic relay neurons).
+            # FS fires 3x faster than RS → more input spikes per frame.
+            # Biology: thalamic relay cells are fast-spiking, not regular.
+            # Having them FS also enables the all_izh fast path in step().
+            snn.set_izhikevich_params('input', a=0.1, b=0.2, c=-65, d=2)   # FS
 
         # Protect cerebellar populations from R-STDP
         # Can be disabled with protect_cerebellum=False for v0.4.3 compatibility
@@ -1166,6 +1298,9 @@ class MuJoCoCreatureBuilder:
         creature._n_sensor_channels = n_sensor_channels if hardware_sensors else creature._count_sensor_channels()
         creature.n_input_neurons = n_input
         creature.n_output_neurons = n_output
+        # Adjust NEURONS_PER_MOTOR when profile overrides n_output
+        if profile_n_output is not None and world.n_actuators > 0:
+            creature.NEURONS_PER_MOTOR = max(1, n_output // world.n_actuators)
 
         # 6. Cognitive Brain
         plasticity_pg = None

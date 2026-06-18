@@ -55,6 +55,9 @@ Changelog:
 
 ## 2. Header Metadata (JSON)
 
+Example below shows a Go2 run for illustration; values are per-run (the Bittle
+release writes `"creature": "bittle"`).
+
 ```json
 {
   "creature": "go2",
@@ -105,6 +108,8 @@ Recorded every 10 simulation steps. Contains full MuJoCo state.
 - `[3:7]` — root quaternion (w, x, y, z)
 - `[7:19]` — 12 joint angles (FL_hip, FL_thigh, FL_calf, FR_*, RL_*, RR_*)
 - `[19:26]` — ball free joint (x, y, z, qw, qx, qy, qz)
+
+*Bittle: 16 qpos = 7 root (3 pos + 4 quat) + 8 leg joints + 1 neck joint; no ball joint, 8 actuators.*
 
 ### 4.2 FRAME_TRAINING (type=2) — Training Stats
 
@@ -385,7 +390,7 @@ grid  = np.frombuffer(raw, dtype=np.uint8).reshape(shape)
 
 ## 5. Behavior States
 
-Emergent behaviors observed during training (not programmed):
+Behavior states selected during training by the drive-based BehaviorPlanner:
 
 | Behavior         | Description                                |
 |------------------|--------------------------------------------|

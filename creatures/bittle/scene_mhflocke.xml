@@ -1,0 +1,11 @@
+<!-- MH-FLOCKE Scene: Petoi Bittle X
+     This is the training/render scene for train_baby.py and render_bittle.py.
+     Wraps bittle.xml which contains the full model + sensors.
+-->
+<mujoco model="bittle_mhflocke">
+  <include file="bittle.xml"/>
+
+  <visual>
+    <global offwidth="2560" offheight="1440"/>
+  </visual>
+</mujoco>

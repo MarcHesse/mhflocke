@@ -1,0 +1,53 @@
+{
+  "name": "Bittle",
+  "template": "petoi_bittle_x",
+  "created_at": "2026-05-23T22:00:00",
+  "description": "Petoi Bittle X quadruped, 8 DOF (2 per leg: shoulder + knee, no abduction). MJCF converted from Petoi URDF, OpenCat firmware reference.",
+  "genome_data": null,
+  "state_data": null,
+  "model_source": "petoi/OpenCatEsp32 (URDF converted to MJCF)",
+  "license": "MIT (OpenCat)",
+  "n_joints": 8,
+  "joints_per_leg": 2,
+  "leg_order": ["FL", "FR", "RL", "RR"],
+  "joint_names_per_leg": ["shoulder", "knee"],
+  "standing_height": 0.072,
+  "mass_kg": 0.300,
+  "root_body": "torso",
+  "pd_kp": [20, 20, 20, 20, 20, 20, 20, 20],
+  "pd_kd": [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+  "pd_scale": 1.0,
+  "pd_fallen_scale": 1.0,
+  "native_position_control": true,
+  "opencat_balance": false,
+  "cpg_config": {
+    "oscillator": "mogli",
+    "n_actuators": 12,
+    "joints_per_leg": 3,
+    "abd_amplitude": 0.0,
+    "hip_amplitude": 0.45,
+    "knee_amplitude": 0.20,
+    "maturation_steps": 500,
+    "notes": "CPG runs as 12-output (jpleg=3) with abd=0. bittle.py extracts HIP+KNEE."
+  },
+  "sensors": [
+    {"name": "imu_accel", "sensor_type": "motion", "parent_segment": "torso", "sensitivity": 1.0, "range": 0.0, "active": true},
+    {"name": "imu_gyro", "sensor_type": "balance", "parent_segment": "torso", "sensitivity": 1.0, "range": 0.0, "active": true},
+    {"name": "torso_quat", "sensor_type": "balance", "parent_segment": "torso", "sensitivity": 1.0, "range": 0.0, "active": true}
+  ],
+  "training_log": [],
+  "total_generations": 0,
+  "total_steps": 0,
+  "best_fitness": 0.0,
+  "parent_name": null,
+  "children": [],
+  "tags": ["petoi", "bittle", "8dof", "small_quadruped", "opencat"],
+
+  "snn": {
+    "n_input": 19,
+    "n_hidden": 500,
+    "n_output": 16,
+    "motor_hidden_ratio": 0.30,
+    "notes": "19 input channels (8 joint + 2 CPG + 4 IMU + 1 US + 4 pad). MH layer enabled — SNN needs learnable pathway (input→MH→output) for R-STDP corrections even with firmware gaits. Was 0.0 which caused output silence (no learnable path to output)."
+  }
+}

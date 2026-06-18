@@ -4,6 +4,9 @@ MH-FLOCKE — Empowerment Drive v0.4.1
 Intrinsic motivation from action-state mutual information.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 95
+
 import numpy as np
 from typing import Optional, List
 from dataclasses import dataclass

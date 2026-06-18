@@ -4,6 +4,9 @@ MH-FLOCKE — Consistency Checker v0.4.1
 Anterior cingulate-inspired conflict monitoring.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 102
+
 import numpy as np
 from typing import Dict, Optional
 

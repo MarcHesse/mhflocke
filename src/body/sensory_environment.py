@@ -17,6 +17,9 @@ v0.4.7: Fixed radius vs spawn distance mismatch (2026-04-22).
 v0.4.6: Quadratic scent decay 1/(0.5+d)^2 for steeper gradient.
 """
 
+__version__ = "0.4.8"
+__logbook__ = 133
+
 import numpy as np
 import logging
 from typing import Optional, Dict, Tuple, List

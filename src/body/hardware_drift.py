@@ -15,6 +15,9 @@ Author: MH-FLOCKE Project (Marc Hesse)
 License: Apache 2.0
 """
 
+__version__ = "0.1.3"
+__logbook__ = 126
+
 import json
 import numpy as np
 from typing import Optional, Dict

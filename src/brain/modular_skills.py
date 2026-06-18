@@ -4,6 +4,9 @@ MH-FLOCKE — Modular Skills v0.4.1
 Skill registry with EWC protection for learned behaviors.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 118
+
 import torch
 import numpy as np
 from typing import Dict, List, Optional, Set

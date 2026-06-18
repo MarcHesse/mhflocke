@@ -1,8 +1,19 @@
 """
-MH-FLOCKE — Brain Persistence v0.4.1
+MH-FLOCKE — Brain Persistence v0.5.0
 ========================================
 Save and load brain state across training sessions.
+
+v0.5.0: Optional cerebellum persistence (Issue #159). save_brain/load_brain
+        take an optional `cerebellum` (CerebellarLearning); its state_dict()
+        is stored under state['cerebellum']. The cerebellum was previously the
+        ONLY learned component not persisted by this bundle (see logbook #23),
+        which blocked sim->hardware cerebellar transfer. Backward compatible:
+        old bundles simply lack the key and load fine.
 """
+
+__version__ = "0.5.0"     # module version (MAJOR.MINOR; MAJOR = contract change)
+__logbook__ = 55          # mh-logbuch module entry
+__status__  = "active"     # active | veraltet | neu
 
 import torch
 import numpy as np
@@ -12,7 +23,8 @@ from typing import Dict, Optional, Any
 from pathlib import Path
 
 
-def save_brain(brain, snn, path: str, metadata: Optional[Dict] = None):
+def save_brain(brain, snn, path: str, metadata: Optional[Dict] = None,
+               cerebellum=None):
     """
     Speichert kompletten CognitiveBrain-State.
     
@@ -21,6 +33,9 @@ def save_brain(brain, snn, path: str, metadata: Optional[Dict] = None):
         snn: SNNController Instanz
         path: Zielpfad (.pt Datei)
         metadata: Optional dict mit Name, Generation, etc.
+        cerebellum: Optional CerebellarLearning. Wenn gesetzt, wird sein
+            state_dict() unter state['cerebellum'] gespeichert (Issue #159 —
+            PF->PkC-Gewichte liegen sonst nirgends im Bundle, siehe #23).
     """
     os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
     
@@ -74,12 +89,20 @@ def save_brain(brain, snn, path: str, metadata: Optional[Dict] = None):
     
     # === 13. Modular Skills ===
     state['skills'] = brain.skills.save_state()
-    
+
+    # === 14. Cerebellum (optional; Issue #159) ===
+    # The cerebellum (CerebellarLearning) is NOT part of CognitiveBrain, so it
+    # was never in this bundle. Its learned PF->PkC weights live in
+    # state_dict() (logbook #23). Persist it here so a sim-trained cerebellum
+    # transfers to hardware alongside the SNN.
+    if cerebellum is not None:
+        state['cerebellum'] = cerebellum.state_dict()
+
     torch.save(state, path)
     return path
 
 
-def load_brain(brain, snn, path: str) -> Dict:
+def load_brain(brain, snn, path: str, cerebellum=None) -> Dict:
     """
     Lädt kompletten CognitiveBrain-State.
     
@@ -87,6 +110,8 @@ def load_brain(brain, snn, path: str) -> Dict:
         brain: CognitiveBrain Instanz (muss bereits initialisiert sein)
         snn: SNNController Instanz
         path: Quellpfad (.pt Datei)
+        cerebellum: Optional CerebellarLearning. Wenn gesetzt UND das Bundle
+            ein state['cerebellum'] enthält, wird dessen state_dict geladen.
         
     Returns:
         Metadata dict aus dem gespeicherten State
@@ -129,7 +154,17 @@ def load_brain(brain, snn, path: str) -> Dict:
         _load_dream_engine(brain.dream_engine, state['dream'])
     if 'skills' in state:
         brain.skills.load_state(state['skills'])
-    
+
+    # Cerebellum (optional; Issue #159). Also accept the Freenove bridge's
+    # legacy key 'cerebellum_state' for cross-format compatibility.
+    if cerebellum is not None:
+        cb_state = state.get('cerebellum', state.get('cerebellum_state'))
+        if cb_state is not None:
+            try:
+                cerebellum.load_state_dict(cb_state)
+            except Exception:
+                pass  # shape mismatch (stale topology) -> keep fresh cerebellum
+
     return state.get('metadata', {})
 
 
@@ -586,7 +621,7 @@ def brain_info(path: str) -> dict:
         key: key in state
         for key in ['snn', 'world_model', 'gwt', 'emotions', 'body_schema',
                      'memory', 'drives', 'metacognition', 'consistency',
-                     'synaptogenesis', 'astrocytes', 'dream']
+                     'synaptogenesis', 'astrocytes', 'dream', 'cerebellum']
     }
     
     # SNN stats

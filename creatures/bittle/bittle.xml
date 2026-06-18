@@ -1,0 +1,369 @@
+<!-- Petoi Bittle X — MuJoCo MJCF for MH-FLOCKE
+     SINGLE SOURCE OF TRUTH for the Bittle BODY.
+     Synced 2026-06-08 from the published, menagerie-quality model
+       github.com/MarcHesse/bittle-mujoco
+
+     Mass validation (2026-06-08, physically weighed, Bittle X V1 / BiBoard V0_1):
+       Total with battery:   273.5 g  (Petoi spec: 265-290 g) ✓
+       Battery (LiPo):        55.0 g
+       Head + neck servo:     18.7 g
+       One P1S servo:         10.7 g  (shoulder x4, knee x4, neck x1)
+       One complete leg:      20.0 g  (thigh bracket + knee servo + shank)
+       Lower leg + servo:     14.0 g  → shank bracket alone: 3.3 g
+       Torso frame (derived): 77.0 g  (total - battery - head - 4x leg)
+       Visual-only bodies:    ~0.0 g  (mass=1e-6 kg each, negligible)
+
+     Foot sites corrected (2026-06-08): FK-derived, z=0 at stand pose.
+     Sites placed in servos_rf/rr/lf/lr bodies (not shank) to match weld group.
+     NOTE: MuJoCo 3.5.0 touch sensor bug — rf/lf/rr/lr_contact always reads 0.
+     Root cause: efc_force scaling changed in MuJoCo 3.x; touch sensor not updated.
+     Workaround: use mj_contactForce() + data.ncon in Python for contact detection.
+     Track: github.com/google-deepmind/mujoco/issues (open bug)
+
+     MH-FLOCKE instrumentation carried in this model (used by train_baby / render):
+       - imu_site + 4 foot sites (rf/lf/rr/lr_foot_site)
+       - full <sensor> block (IMU accel/gyro/quat + framepos/velocimeter + 8 jointpos + 4 touch)
+       - <keyframe name="stand"> (train_baby auto-reset via mj_resetDataKeyframe)
+       - root body "torso", materials
+
+     8 position actuators, MH-FLOCKE order:
+       0: rf_shoulder (shrfs_joint)   1: rf_knee (shrft_joint)
+       2: lf_shoulder (shlfs_joint)   3: lf_knee (shlft_joint)
+       4: rr_shoulder (shrrs_joint)   5: rr_knee (shrrt_joint)
+       6: lr_shoulder (shlrs_joint)   7: lr_knee (shlrt_joint)
+     Note: neck_joint exists but is not actuated.
+     NOTE: brain input stays IMU + proprioception + CPG only (#59); framepos/
+     velocimeter/touch are sim-only trainer ground-truth, never fed to the SNN.
+-->
+<mujoco model="bittle">
+  <compiler angle="radian" meshdir="meshes_obj" autolimits="true" inertiafromgeom="false"/>
+
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="implicitfast" cone="elliptic"/>
+
+  <default>
+    <joint limited="true" damping="1.5" armature="0.01" frictionloss="0.15"/>
+    <default class="visual">
+      <geom contype="0" conaffinity="0" group="0" density="1"/>
+    </default>
+    <default class="collision">
+      <geom condim="3" contype="1" conaffinity="15" friction="0.9 0.02 0.01" group="1" rgba="0.5 0.5 0.5 0.5"/>
+    </default>
+    <position ctrllimited="true" ctrlrange="-1.57 1.57" kp="40.0"/>
+    <mesh scale="0.001 0.001 0.001"/>
+  </default>
+
+  <asset>
+    <mesh name="base_link" file="base_link.obj"/>
+    <mesh name="front__1" file="front__1.obj"/>
+    <mesh name="rear__1" file="rear__1.obj"/>
+    <mesh name="servo_rfs_1" file="servo_rfs_1.obj"/>
+    <mesh name="servo_rrs__1" file="servo_rrs__1.obj"/>
+    <mesh name="servo_lfs_1" file="servo_lfs_1.obj"/>
+    <mesh name="servo_lrs__1" file="servo_lrs__1.obj"/>
+    <mesh name="c_neck__1" file="c_neck__1.obj"/>
+    <mesh name="servo_neck__1" file="servo_neck__1.obj"/>
+    <mesh name="head__1" file="head__1.obj"/>
+    <mesh name="jaw_1" file="jaw_1.obj"/>
+    <mesh name="c_thrf__1" file="c_thrf__1.obj"/>
+    <mesh name="th_rf_1" file="th_rf_1.obj"/>
+    <mesh name="tho_rf__1" file="tho_rf__1.obj"/>
+    <mesh name="tube__1" file="tube__1.obj"/>
+    <mesh name="c_thorf_1" file="c_thorf_1.obj"/>
+    <mesh name="servos_rf_1" file="servos_rf_1.obj"/>
+    <mesh name="shank_rf_1" file="shank_rf_1.obj"/>
+    <mesh name="c_thrr_1" file="c_thrr_1.obj"/>
+    <mesh name="th_rr_1" file="th_rr_1.obj"/>
+    <mesh name="tho_rr_1" file="tho_rr_1.obj"/>
+    <mesh name="tube_rr_1" file="tube_rr_1.obj"/>
+    <mesh name="c_thorr_1" file="c_thorr_1.obj"/>
+    <mesh name="servos_rr_1" file="servos_rr_1.obj"/>
+    <mesh name="shank_rr_1" file="shank_rr_1.obj"/>
+    <mesh name="c_thlf_1" file="c_thlf_1.obj"/>
+    <mesh name="th_lf_1" file="th_lf_1.obj"/>
+    <mesh name="tho_lf_1" file="tho_lf_1.obj"/>
+    <mesh name="tube_lf_1" file="tube_lf_1.obj"/>
+    <mesh name="c_tholf_1" file="c_tholf_1.obj"/>
+    <mesh name="servos_lf_1" file="servos_lf_1.obj"/>
+    <mesh name="shank_lf_1" file="shank_lf_1.obj"/>
+    <mesh name="c_thlr_1" file="c_thlr_1.obj"/>
+    <mesh name="th_lr__1" file="th_lr__1.obj"/>
+    <mesh name="tho_lr_1" file="tho_lr_1.obj"/>
+    <mesh name="tube_lr_1" file="tube_lr_1.obj"/>
+    <mesh name="c_tholr__1" file="c_tholr__1.obj"/>
+    <mesh name="servos_lr_1" file="servos_lr_1.obj"/>
+    <mesh name="shank_lr_1" file="shank_lr_1.obj"/>
+    <mesh name="cover_1" file="cover_1.obj"/>
+    <mesh name="battery_1" file="battery_1.obj"/>
+
+    <!-- Materials: Yellow frame, Blue thighs+shanks, Red knee connectors, Black servos+cover -->
+    <material name="bittle_yellow" rgba="0.95 0.7 0.1 1"/>
+    <material name="body_dark" rgba="0.08 0.08 0.08 1"/>
+    <material name="head_yellow" rgba="0.95 0.7 0.1 1"/>
+    <material name="bittle_blue" rgba="0.15 0.25 0.7 1"/>
+    <material name="bittle_red" rgba="0.85 0.1 0.1 1"/>
+    <material name="bittle_black" rgba="0.08 0.08 0.08 1"/>
+    <material name="foot_red" rgba="0.8 0.15 0.1 1"/>
+    <texture name="grid" type="2d" builtin="checker" width="512" height="512"
+             rgb1="0.2 0.3 0.4" rgb2="0.3 0.4 0.5"/>
+    <material name="grid" texture="grid" texrepeat="8 8" reflectance="0.2"/>
+  </asset>
+
+  <worldbody>
+    <geom name="floor" type="plane" size="0 0 0.1" pos="0 0 -0.01" material="grid" contype="1" conaffinity="1"/>
+    <light pos="0 0 1.5" dir="0 0 -1" diffuse="0.8 0.8 0.8" specular="0.3 0.3 0.3"/>
+    <light pos="0.5 0.5 1.0" dir="-0.5 -0.5 -1" diffuse="0.4 0.4 0.4"/>
+
+    <body name="torso" pos="0 0 0.06">
+      <freejoint name="root"/>
+      <inertial pos="0.00065 -0.00002 0.02651" mass="0.077" diaginertia="0.000082 0.000161 0.000200"/>
+      <site name="imu_site" pos="0 0 0" size="0.001" rgba="0 0 0 0"/>
+
+      <!-- Torso visuals -->
+      <geom type="mesh" mesh="base_link" class="visual" material="bittle_yellow"/>
+      <geom type="mesh" mesh="base_link" class="collision"/>
+      <body name="front__1" pos="0.061733 -0.028 0.025792">
+        <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
+        <geom pos="-0.061733 0.028 -0.025792" type="mesh" mesh="front__1" class="visual" material="bittle_blue"/>
+        <geom pos="-0.061733 0.028 -0.025792" type="mesh" mesh="front__1" class="collision"/>
+      </body>
+      <body name="rear__1" pos="-0.061733 0.028 0.025792">
+        <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
+        <geom pos="0.061733 -0.028 -0.025792" type="mesh" mesh="rear__1" class="visual" material="bittle_blue"/>
+        <geom pos="0.061733 -0.028 -0.025792" type="mesh" mesh="rear__1" class="collision"/>
+      </body>
+      <body name="cover_1" pos="0 -0.031 0.030939">
+        <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
+        <geom pos="0 0.031 -0.030939" type="mesh" mesh="cover_1" class="visual" material="body_dark"/>
+        <geom pos="0 0.031 -0.030939" type="mesh" mesh="cover_1" class="collision"/>
+      </body>
+      <body name="battery_1" pos="-0.01725 0 0.023892">
+        <!-- Inertial z mirrored (2026-06-11): URDF conversion sign-flipped the battery
+             height. Real Bittle: LiPo pack clips UNDER the chassis (confirmed on hardware).
+             Mass was at +23.9mm above torso origin -> now -23.9mm (pos z = -2*0.023892).
+             Body pos/geoms untouched (geom offset cancels body pos; mesh placement is
+             vertex-based and was already visually correct). Moves total CoM down ~9.6mm. -->
+        <inertial pos="0 0 -0.047784" mass="0.055" diaginertia="5.2e-6 2.3e-5 2.7e-5"/>
+        <geom pos="0.01725 0 -0.023892" type="mesh" mesh="battery_1" class="visual" material="body_dark"/>
+        <geom pos="0.01725 0 -0.023892" type="mesh" mesh="battery_1" class="collision"/>
+      </body>
+
+      <!-- HEAD with neck joint -->
+      <body name="c_neck__1" pos="0.044904 0 0.031351">
+        <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
+        <geom pos="-0.044904 0 -0.031351" type="mesh" mesh="c_neck__1" class="visual" material="bittle_blue"/>
+        <body name="servo_neck__1" pos="0.00265 0 0.00459">
+          <joint name="neck_joint" pos="0 0 0" axis="-0.5 0 -0.866025" limited="true" range="-0.5 0.5"/>
+          <inertial pos="0.06596 -0.00537 0.05490" mass="0.0187" diaginertia="8.3e-6 1.1e-5 7.7e-6"/>
+          <geom pos="-0.047554 0 -0.035941" type="mesh" mesh="servo_neck__1" class="visual" material="bittle_black"/>
+          <body name="jaw_1" pos="0.016896 -0.012925 -0.001914">
+            <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
+            <geom pos="-0.06445 0.012925 -0.034027" type="mesh" mesh="jaw_1" class="visual" material="bittle_blue"/>
+            <body name="head__1" pos="-0.008739 -0.00423 0.0263">
+              <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
+              <geom pos="-0.055711 0.017155 -0.060327" type="mesh" mesh="head__1" class="visual" material="head_yellow"/>
+            </body>
+          </body>
+        </body>
+      </body>
+
+      <!-- ========== RIGHT FRONT LEG ========== -->
+      <body name="servo_rfs_1" pos="0.059645 -0.036 0.017875">
+        <inertial pos="0 0 0" mass="0.0107" diaginertia="9e-7 1.2e-6 6e-7"/>
+        <geom pos="-0.059645 0.036 -0.017875" type="mesh" mesh="servo_rfs_1" class="visual" material="bittle_black"/>
+        <body name="c_thrf__1" pos="-0.007145 -0.0125 0.004125">
+          <joint name="shrfs_joint" pos="0 0 0" axis="0 1 0" range="-1.5708 1.6"/>
+          <inertial pos="-0.02 0 -0.01" mass="0.006" diaginertia="0.0000011 0.0000022 0.0000022"/>
+          <geom pos="-0.0525 0.0485 -0.022" type="mesh" mesh="c_thrf__1" class="visual" material="bittle_red"/>
+          <geom pos="-0.0525 0.0485 -0.022" type="mesh" mesh="c_thrf__1" class="collision"/>
+          <body name="th_rf_1" pos="0 -0.0023 0">
+            <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
+            <geom pos="-0.0525 0.0508 -0.022" type="mesh" mesh="th_rf_1" class="visual" material="bittle_red"/>
+            <body name="tho_rf__1" pos="-0.013523 0.000445 -0.003623">
+              <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
+              <geom pos="-0.038977 0.050355 -0.018377" type="mesh" mesh="tho_rf__1" class="visual" material="bittle_red"/>
+              <body name="c_thorf_1" pos="-0.03091 -0.004582 -0.008283">
+                <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
+                <geom pos="-0.008067 0.054937 -0.010094" type="mesh" mesh="c_thorf_1" class="visual" material="bittle_red"/>
+                <body name="servos_rf_1" pos="0 0.007857 0">
+                  <joint name="shrft_joint" pos="0 0 0" axis="0 1 0" range="-1.22173 1.5708"/>
+                  <inertial pos="-0.004 0.02 -0.005" mass="0.0107" diaginertia="9e-7 1.2e-6 6e-7"/>
+                  <geom pos="-0.008067 0.04708 -0.010094" type="mesh" mesh="servos_rf_1" class="visual" material="bittle_black"/>
+                  <geom pos="-0.008067 0.04708 -0.010094" type="mesh" mesh="servos_rf_1" class="collision"/>
+                  <site name="rf_foot_site" pos="0.01869 0.00000 -0.02242" type="sphere" size="0.001" rgba="0 0 0 0"/>
+                  <body name="shank_rf_1" pos="-0.008218 0.0075 0.000719">
+                    <inertial pos="0 0 0" mass="0.0033" diaginertia="1.2e-6 1.4e-8 1.2e-6"/>
+                    <geom pos="0.000151 0.03958 -0.010813" type="mesh" mesh="shank_rf_1" class="visual" material="bittle_blue"/>
+                    <geom pos="0.000151 0.03958 -0.010813" type="mesh" mesh="shank_rf_1" class="collision"/>
+                  </body>
+                </body>
+              </body>
+            </body>
+            <body name="tube__1" pos="-0.02335 -0.001807 -0.00172">
+              <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
+              <geom pos="-0.02915 0.052607 -0.02028" type="mesh" mesh="tube__1" class="visual" material="bittle_red"/>
+            </body>
+          </body>
+        </body>
+      </body>
+
+      <!-- ========== RIGHT REAR LEG ========== -->
+      <body name="servo_rrs__1" pos="-0.059645 -0.036 0.017875">
+        <inertial pos="0 0 0" mass="0.0107" diaginertia="9e-7 1.2e-6 6e-7"/>
+        <geom pos="0.059645 0.036 -0.017875" type="mesh" mesh="servo_rrs__1" class="visual" material="bittle_black"/>
+        <body name="c_thrr_1" pos="0.007145 -0.0125 0.004125">
+          <joint name="shrrs_joint" pos="0 0 0" axis="0 -1 0" range="-1.5708 1.6"/>
+          <inertial pos="0.02 0 -0.01" mass="0.006" diaginertia="0.0000011 0.0000022 0.0000022"/>
+          <geom pos="0.0525 0.0485 -0.022" type="mesh" mesh="c_thrr_1" class="visual" material="bittle_red"/>
+          <geom pos="0.0525 0.0485 -0.022" type="mesh" mesh="c_thrr_1" class="collision"/>
+          <body name="th_rr_1" pos="0 -0.0023 0">
+            <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
+            <geom pos="0.0525 0.0508 -0.022" type="mesh" mesh="th_rr_1" class="visual" material="bittle_red"/>
+            <body name="tho_rr_1" pos="-0.013523 0.000445 -0.003623">
+              <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
+              <geom pos="0.066023 0.050355 -0.018377" type="mesh" mesh="tho_rr_1" class="visual" material="bittle_red"/>
+              <body name="c_thorr_1" pos="-0.03091 -0.004582 -0.008283">
+                <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
+                <geom pos="0.096933 0.054937 -0.010094" type="mesh" mesh="c_thorr_1" class="visual" material="bittle_red"/>
+                <body name="servos_rr_1" pos="0 0.007857 0">
+                  <joint name="shrrt_joint" pos="0 0 0" axis="0 1 0" range="-1.22173 1.5708"/>
+                  <inertial pos="0.05 0.02 -0.005" mass="0.0107" diaginertia="9e-7 1.2e-6 6e-7"/>
+                  <geom pos="0.096933 0.04708 -0.010094" type="mesh" mesh="servos_rr_1" class="visual" material="bittle_black"/>
+                  <geom pos="0.096933 0.04708 -0.010094" type="mesh" mesh="servos_rr_1" class="collision"/>
+                  <site name="rr_foot_site" pos="0.01854 0.00000 -0.02223" type="sphere" size="0.001" rgba="0 0 0 0"/>
+                  <body name="shank_rr_1" pos="-0.008218 0.0075 0.000719">
+                    <inertial pos="0 0 0" mass="0.0033" diaginertia="1.2e-6 1.4e-8 1.2e-6"/>
+                    <geom pos="0.105151 0.03958 -0.010813" type="mesh" mesh="shank_rr_1" class="visual" material="bittle_blue"/>
+                    <geom pos="0.105151 0.03958 -0.010813" type="mesh" mesh="shank_rr_1" class="collision"/>
+                  </body>
+                </body>
+              </body>
+            </body>
+            <body name="tube_rr_1" pos="-0.02335 -0.001807 -0.00172">
+              <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
+              <geom pos="0.07585 0.052607 -0.02028" type="mesh" mesh="tube_rr_1" class="visual" material="bittle_red"/>
+            </body>
+          </body>
+        </body>
+      </body>
+
+      <!-- ========== LEFT FRONT LEG ========== -->
+      <body name="servo_lfs_1" pos="0.059645 0.036 0.017875">
+        <inertial pos="0 0 0" mass="0.0107" diaginertia="9e-7 1.2e-6 6e-7"/>
+        <geom pos="-0.059645 -0.036 -0.017875" type="mesh" mesh="servo_lfs_1" class="visual" material="bittle_black"/>
+        <body name="c_thlf_1" pos="-0.007145 0.0125 0.004125">
+          <joint name="shlfs_joint" pos="0 0 0" axis="0 1 0" range="-1.5708 1.6"/>
+          <inertial pos="-0.02 0 -0.01" mass="0.006" diaginertia="0.0000011 0.0000022 0.0000022"/>
+          <geom pos="-0.0525 -0.0485 -0.022" type="mesh" mesh="c_thlf_1" class="visual" material="bittle_red"/>
+          <geom pos="-0.0525 -0.0485 -0.022" type="mesh" mesh="c_thlf_1" class="collision"/>
+          <body name="th_lf_1" pos="0 0.0023 0">
+            <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
+            <geom pos="-0.0525 -0.0508 -0.022" type="mesh" mesh="th_lf_1" class="visual" material="bittle_red"/>
+            <body name="tho_lf_1" pos="-0.013523 -0.000445 -0.003623">
+              <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
+              <geom pos="-0.038977 -0.050355 -0.018377" type="mesh" mesh="tho_lf_1" class="visual" material="bittle_red"/>
+              <body name="c_tholf_1" pos="-0.03091 0.004582 -0.008283">
+                <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
+                <geom pos="-0.008067 -0.054937 -0.010094" type="mesh" mesh="c_tholf_1" class="visual" material="bittle_red"/>
+                <body name="servos_lf_1" pos="0 -0.007857 0">
+                  <joint name="shlft_joint" pos="0 0 0" axis="0 1 0" range="-1.22173 1.5708"/>
+                  <inertial pos="-0.004 -0.02 -0.005" mass="0.0107" diaginertia="9e-7 1.2e-6 6e-7"/>
+                  <geom pos="-0.008067 -0.04708 -0.010094" type="mesh" mesh="servos_lf_1" class="visual" material="bittle_black"/>
+                  <geom pos="-0.008067 -0.04708 -0.010094" type="mesh" mesh="servos_lf_1" class="collision"/>
+                  <site name="lf_foot_site" pos="0.01868 0.00000 -0.02241" type="sphere" size="0.001" rgba="0 0 0 0"/>
+                  <body name="shank_lf_1" pos="-0.008218 -0.007498 0.000719">
+                    <inertial pos="0 0 0" mass="0.0033" diaginertia="1.2e-6 1.4e-8 1.2e-6"/>
+                    <geom pos="0.000151 -0.039582 -0.010813" type="mesh" mesh="shank_lf_1" class="visual" material="bittle_blue"/>
+                    <geom pos="0.000151 -0.039582 -0.010813" type="mesh" mesh="shank_lf_1" class="collision"/>
+                  </body>
+                </body>
+              </body>
+            </body>
+            <body name="tube_lf_1" pos="-0.02335 0.001807 -0.00172">
+              <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
+              <geom pos="-0.02915 -0.052607 -0.02028" type="mesh" mesh="tube_lf_1" class="visual" material="bittle_red"/>
+            </body>
+          </body>
+        </body>
+      </body>
+
+      <!-- ========== LEFT REAR LEG ========== -->
+      <body name="servo_lrs__1" pos="-0.059645 0.036 0.017875">
+        <inertial pos="0 0 0" mass="0.0107" diaginertia="9e-7 1.2e-6 6e-7"/>
+        <geom pos="0.059645 -0.036 -0.017875" type="mesh" mesh="servo_lrs__1" class="visual" material="bittle_black"/>
+        <body name="c_thlr_1" pos="0.007145 0.0125 0.004125">
+          <joint name="shlrs_joint" pos="0 0 0" axis="0 -1 0" range="-1.5708 1.6"/>
+          <inertial pos="0.02 0 -0.01" mass="0.006" diaginertia="0.0000011 0.0000022 0.0000022"/>
+          <geom pos="0.0525 -0.0485 -0.022" type="mesh" mesh="c_thlr_1" class="visual" material="bittle_red"/>
+          <geom pos="0.0525 -0.0485 -0.022" type="mesh" mesh="c_thlr_1" class="collision"/>
+          <body name="th_lr__1" pos="0 0.002302 0">
+            <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
+            <geom pos="0.0525 -0.050802 -0.022" type="mesh" mesh="th_lr__1" class="visual" material="bittle_red"/>
+            <body name="tho_lr_1" pos="-0.013523 -0.000445 -0.003623">
+              <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
+              <geom pos="0.066023 -0.050357 -0.018377" type="mesh" mesh="tho_lr_1" class="visual" material="bittle_red"/>
+              <body name="c_tholr__1" pos="-0.03091 0.004582 -0.008283">
+                <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
+                <geom pos="0.096933 -0.054939 -0.010094" type="mesh" mesh="c_tholr__1" class="visual" material="bittle_red"/>
+                <body name="servos_lr_1" pos="0 -0.007857 0">
+                  <joint name="shlrt_joint" pos="0 0 0" axis="0 1 0" range="-1.22173 1.5708"/>
+                  <inertial pos="0.05 -0.02 -0.005" mass="0.0107" diaginertia="9e-7 1.2e-6 6e-7"/>
+                  <geom pos="0.096933 -0.047082 -0.010094" type="mesh" mesh="servos_lr_1" class="visual" material="bittle_black"/>
+                  <geom pos="0.096933 -0.047082 -0.010094" type="mesh" mesh="servos_lr_1" class="collision"/>
+                  <site name="lr_foot_site" pos="0.01853 0.00000 -0.02222" type="sphere" size="0.001" rgba="0 0 0 0"/>
+                  <body name="shank_lr_1" pos="-0.008218 -0.0075 0.000719">
+                    <inertial pos="0 0 0" mass="0.0033" diaginertia="1.2e-6 1.4e-8 1.2e-6"/>
+                    <geom pos="0.105151 -0.039582 -0.010813" type="mesh" mesh="shank_lr_1" class="visual" material="bittle_blue"/>
+                    <geom pos="0.105151 -0.039582 -0.010813" type="mesh" mesh="shank_lr_1" class="collision"/>
+                  </body>
+                </body>
+              </body>
+            </body>
+            <body name="tube_lr_1" pos="-0.02335 0.001807 -0.00172">
+              <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
+              <geom pos="0.07585 -0.052609 -0.02028" type="mesh" mesh="tube_lr_1" class="visual" material="bittle_red"/>
+            </body>
+          </body>
+        </body>
+      </body>
+
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="rf_shoulder_motor" joint="shrfs_joint"/>
+    <position name="rf_knee_motor" joint="shrft_joint"/>
+    <position name="lf_shoulder_motor" joint="shlfs_joint"/>
+    <position name="lf_knee_motor" joint="shlft_joint"/>
+    <position name="rr_shoulder_motor" joint="shrrs_joint"/>
+    <position name="rr_knee_motor" joint="shrrt_joint"/>
+    <position name="lr_shoulder_motor" joint="shlrs_joint"/>
+    <position name="lr_knee_motor" joint="shlrt_joint"/>
+  </actuator>
+
+  <sensor>
+    <accelerometer name="imu_accel" site="imu_site"/>
+    <gyro name="imu_gyro" site="imu_site"/>
+    <framequat name="torso_quat" objtype="body" objname="torso"/>
+    <framepos name="torso_pos" objtype="body" objname="torso"/>
+    <velocimeter name="torso_vel" site="imu_site"/>
+    <jointpos name="rf_shoulder_pos" joint="shrfs_joint"/>
+    <jointpos name="rf_knee_pos" joint="shrft_joint"/>
+    <jointpos name="lf_shoulder_pos" joint="shlfs_joint"/>
+    <jointpos name="lf_knee_pos" joint="shlft_joint"/>
+    <jointpos name="rr_shoulder_pos" joint="shrrs_joint"/>
+    <jointpos name="rr_knee_pos" joint="shrrt_joint"/>
+    <jointpos name="lr_shoulder_pos" joint="shlrs_joint"/>
+    <jointpos name="lr_knee_pos" joint="shlrt_joint"/>
+    <touch name="rf_contact" site="rf_foot_site"/>
+    <touch name="lf_contact" site="lf_foot_site"/>
+    <touch name="rr_contact" site="rr_foot_site"/>
+    <touch name="lr_contact" site="lr_foot_site"/>
+  </sensor>
+
+  <!-- qpos joint order: neck, RF_sh, RF_kn, RR_sh, RR_kn, LF_sh, LF_kn, LR_sh, LR_kn -->
+  <keyframe>
+    <key name="stand" qpos="0 0 0.06  1 0 0 0  -0.48 -0.7854 1.4835  0.7854 1.4835  -0.7854 1.4835  0.7854 1.4835"
+                      ctrl="-0.7854 1.4835  -0.7854 1.4835  0.7854 1.4835  0.7854 1.4835"/>
+  </keyframe>
+
+</mujoco>

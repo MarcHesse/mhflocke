@@ -55,6 +55,10 @@ Usage:
 Author: MH-FLOCKE Level 15 v0.4.3
 """
 
+__version__ = "0.8.1"     # module version (MAJOR.MINOR); Baby-KI trainer
+__logbook__ = 63          # mh-logbuch module entry
+__status__  = "active"     # active | veraltet | neu
+
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 if sys.platform != 'win32':
@@ -93,6 +97,130 @@ from src.body.terrain import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# === SNN DIAGNOSTICS (temporary, remove after debugging) ===
+def diagnose_snn(creature, step):
+    """Full SNN signal chain diagnosis."""
+    snn = creature.snn
+    n = snn.config.n_neurons
+    pops = snn.populations
+
+    print(f'\n{"="*70}')
+    print(f'  SNN DIAGNOSIS — Step {step}')
+    print(f'{"="*70}')
+
+    # 1. Topology
+    pop_sizes = {name: len(ids) for name, ids in pops.items()}
+    print(f'  Topology: {n} total | {pop_sizes}')
+    print(f'  hardware_sensors={creature._hardware_sensors} | '
+          f'n_sensors={creature._n_sensor_channels} | '
+          f'n_motors={creature._n_motors}')
+    print(f'  qpos_offset={creature._qpos_offset} | '
+          f'qvel_offset={creature._qvel_offset} | '
+          f'motor_scale={getattr(creature, "motor_scale", "N/A")}')
+
+    # 2. Sensor Input
+    sensor_input = creature.get_sensor_input()
+    si_nz = (sensor_input.abs() > 1e-6).sum().item()
+    print(f'\n  SENSOR INPUT [{n}]:')
+    print(f'    nonzero={si_nz}/{n} min={sensor_input.min().item():.4f} '
+          f'max={sensor_input.max().item():.4f}')
+    for pname in ['input', 'motor_hidden', 'output']:
+        ids = pops.get(pname, [])
+        if len(ids) > 0:
+            vals = sensor_input[ids]
+            nz = (vals.abs() > 1e-6).sum().item()
+            print(f'    {pname:20s}: nonzero={nz}/{len(ids)} '
+                  f'max={vals.max().item():.4f}')
+    inp_ids = pops.get('input', [])
+    if len(inp_ids) > 0:
+        first20 = sensor_input[inp_ids[:20]].tolist()
+        print(f'    First 20 input: {[f"{v:.3f}" for v in first20]}')
+
+    # 3. Membrane Potentials
+    V = snn.V
+    u = snn._u
+    print(f'\n  MEMBRANE V & RECOVERY u:')
+    for pname, ids in pops.items():
+        if len(ids) > 0 and pname != 'mossy_fibers':
+            Vp = V[ids]; up = u[ids]
+            print(f'    {pname:20s}: V [{Vp.min().item():7.1f}, {Vp.max().item():7.1f}] '
+                  f'mean={Vp.mean().item():7.1f} | u mean={up.mean().item():7.1f}')
+
+    # 4. Spike threshold proximity
+    print(f'\n  THRESHOLD PROXIMITY (Izh fires at V>=30):')
+    for pname in ['input', 'motor_hidden', 'output', 'granule_cells', 'dcn']:
+        ids = pops.get(pname, [])
+        if len(ids) > 0:
+            Vp = V[ids]
+            at_rest = ((Vp > -70) & (Vp < -60)).sum().item()
+            rising = (Vp > -20).sum().item()
+            spiking = (Vp >= 30).sum().item()
+            print(f'    {pname:20s}: rest={at_rest} rising={rising} spiking={spiking}')
+
+    # 5. Accumulated Spikes
+    acc = getattr(creature, '_accumulated_spikes', None)
+    if acc is not None:
+        print(f'\n  SPIKES (last frame, {creature.SNN_SUBSTEPS} substeps):')
+        for pname, ids in pops.items():
+            if len(ids) > 0 and pname != 'mossy_fibers':
+                ps = acc[ids].sum().item()
+                rate = ps / (len(ids) * creature.SNN_SUBSTEPS) if ps > 0 else 0
+                print(f'    {pname:20s}: {ps:6.0f} spikes '
+                      f'(rate={rate:.4f}/neuron/substep)')
+
+    # 6. Connectivity per pathway
+    print(f'\n  CONNECTIVITY ({snn._n_synapses} synapses):')
+    if snn._weight_values is not None:
+        wv = snn._weight_values
+        idx = snn._weight_indices
+        for src_n, tgt_n in [('input','motor_hidden'), ('input','granule_cells'),
+                             ('motor_hidden','output'), ('motor_hidden','motor_hidden'),
+                             ('dcn','output'), ('granule_cells','output')]:
+            src_ids = pops.get(src_n, [])
+            tgt_ids = pops.get(tgt_n, [])
+            if len(src_ids) > 0 and len(tgt_ids) > 0:
+                src_s = set(src_ids.tolist()) if torch.is_tensor(src_ids) else set(src_ids)
+                tgt_s = set(tgt_ids.tolist()) if torch.is_tensor(tgt_ids) else set(tgt_ids)
+                mask = torch.zeros(idx.shape[1], dtype=torch.bool)
+                for i in range(idx.shape[1]):
+                    if idx[0,i].item() in src_s and idx[1,i].item() in tgt_s:
+                        mask[i] = True
+                nc = mask.sum().item()
+                if nc > 0:
+                    pw = wv[mask]
+                    print(f'    {src_n}->{tgt_n}: {nc} syn '
+                          f'w=[{pw.min().item():.3f},{pw.max().item():.3f}] '
+                          f'abs_mean={pw.abs().mean().item():.3f}')
+                else:
+                    print(f'    {src_n}->{tgt_n}: NO CONNECTIONS!')
+
+    # 7. Tonic current bug check
+    tonic = getattr(snn, '_hidden_tonic_current', 0.0)
+    has_hidden = 'hidden' in pops
+    has_mh = 'motor_hidden' in pops
+    print(f'\n  TONIC CURRENT: {tonic:.4f}')
+    print(f'    pop "hidden" exists: {has_hidden}')
+    print(f'    pop "motor_hidden" exists: {has_mh}')
+    if not has_hidden and has_mh and tonic > 0:
+        print(f'    >>> BUG: tonic={tonic} set but code checks for "hidden"!')
+        print(f'    >>> motor_hidden gets ZERO tonic current!')
+
+    # 8. Neuromodulation
+    ne = snn.neuromod_levels.get('ne', 0.0)
+    da = snn.neuromod_levels.get('da', 0.0)
+    print(f'\n  NEUROMOD: DA={da:.3f} NE={ne:.3f}')
+
+    # 9. Critical analysis
+    si_max = sensor_input.max().item()
+    print(f'\n  CRITICAL:')
+    print(f'    max sensor_input={si_max:.4f} -> after *10 = {si_max*10:.1f} mV')
+    print(f'    Izh RS at rest: dV = -3 + I   (need I > 3 mV for dV > 0)')
+    print(f'    Input neurons: direct I={si_max*10:.1f} mV -> should fire')
+    print(f'    Motor_hidden: synaptic only (w=0.5-1.5 * 10 = 5-15 mV/spike)')
+    print(f'{"="*70}\n')
+# === END SNN DIAGNOSTICS ===
 
 
 def resolve_creature_paths(creature_name: str, xml_arg: str):
@@ -290,37 +418,43 @@ def patch_xml_timestep(xml_path, new_timestep=0.005):
 class CompetenceGate:
     """Competence-gated CPG->Actor handoff. Resolves Issue #45.
     
-    v0.5.0: Stability-primary gate. Actor competence grows based on
-    upright stability, not speed. A baby that stands and takes small
-    steps is competent even if slow. Speed was blocking handoff when
-    mechanical drift consumed most locomotion energy for correction.
+    v0.6.0: Pure IMU gate. Only uses signals available on real hardware:
+    upright (from IMU accelerometer) and fall detection. No velocity,
+    no world position — the real robot doesn't have those.
     
     Biology: Motor competence in neonates is assessed by postural
-    stability first, locomotion speed second. A foal that stands
-    steadily for 10 minutes is ready to walk, regardless of speed.
+    stability. A foal that stands steadily is ready to walk.
+    The vestibular system (= IMU) is the primary feedback.
+    
+    Logic:
+    - Upright and not fallen → competence grows
+    - Fallen → competence shrinks (fast)
+    - Not upright but not fallen → competence shrinks (slow)
+    - CPG weight decreases as competence increases
     """
 
-    def __init__(self, speed_threshold=0.03, grow_rate=0.0002,
-                 shrink_rate=0.0003, cpg_min=0.40, cpg_max=0.9,
-                 vel_ema_decay=0.99, stability_window=1000):
-        self.speed_threshold = speed_threshold
+    def __init__(self, grow_rate=0.0002, shrink_rate=0.0003,
+                 cpg_min=0.40, cpg_max=0.9, upright_threshold=0.6,
+                 stability_window=1000, **kwargs):
         self.grow_rate = grow_rate
         self.shrink_rate = shrink_rate
         self.cpg_min = cpg_min
         self.cpg_max = cpg_max
+        self.upright_threshold = upright_threshold
         self.actor_competence = 0.0
         self.cpg_weight = cpg_max
-        self.vel_ema_decay = vel_ema_decay
-        self.vel_ema = 0.0
         # Stability tracking
         self.stability_window = stability_window
-        self._recent_falls = 0       # falls in current window
-        self._window_step = 0        # steps since window reset
-        self._fall_rate = 0.0        # falls per 1000 steps (smoothed)
+        self._recent_falls = 0
+        self._window_step = 0
+        self._fall_rate = 0.0        # falls per 1000 steps
         self._upright_ema = 1.0      # smoothed upright value
+        # Keep for backward compat but unused in gate logic
+        self.vel_ema = 0.0
+        self.speed_threshold = kwargs.get('speed_threshold', 0.0)
 
     def update(self, step, vel_mps, is_fallen, upright=1.0):
-        # Track upright EMA
+        # Track upright EMA (IMU-derived, available on real hardware)
         self._upright_ema = self._upright_ema * 0.995 + upright * 0.005
         
         # Track fall rate in sliding window
@@ -332,34 +466,27 @@ class CompetenceGate:
             self._recent_falls = 0
             self._window_step = 0
 
+        # Keep vel_ema updated for logging only (not used in gate logic)
+        self.vel_ema = self.vel_ema * 0.99 + vel_mps * 0.01
+
         if is_fallen:
-            # On fall: actor clearly not competent, fast shrink
-            self.actor_competence = max(0.0, self.actor_competence - self.shrink_rate * 10)
+            # Fallen: fast shrink
+            self.actor_competence = max(0.0, self.actor_competence - self.shrink_rate * 5)
             self._recompute_cpg()
             return
         
-        # Smooth velocity
-        self.vel_ema = self.vel_ema * self.vel_ema_decay + vel_mps * (1.0 - self.vel_ema_decay)
+        # Pure IMU gate: only upright stability matters
+        is_upright = upright > self.upright_threshold
+        is_stable = self._fall_rate < 5.0 and self._upright_ema > self.upright_threshold
         
-        # v0.5.0: Stability-primary competence
-        # Stability alone is enough for slow growth (baby standing steadily)
-        # Speed adds bonus growth (baby walking confidently)
-        is_moving = self.vel_ema > self.speed_threshold
-        is_stable = self._fall_rate < 5.0 and self._upright_ema > 0.85
-        
-        if is_stable and is_moving:
-            # Stable AND moving: fastest growth
-            self.actor_competence = min(1.0, self.actor_competence + self.grow_rate * 1.5)
-        elif is_stable:
-            # Stable but slow/stopped: still grow, just slower
-            # This is the key change — drift compensation may consume
-            # movement energy, but the actor is still learning balance
-            self.actor_competence = min(1.0, self.actor_competence + self.grow_rate * 0.5)
-        elif is_moving and not is_stable:
-            # Moving but unstable: actor is causing problems, shrink faster
-            self.actor_competence = max(0.0, self.actor_competence - self.shrink_rate * 3)
+        if is_upright and is_stable:
+            # Standing stably: competence grows
+            self.actor_competence = min(1.0, self.actor_competence + self.grow_rate)
+        elif is_upright:
+            # Momentarily upright but recent instability: slow growth
+            self.actor_competence = min(1.0, self.actor_competence + self.grow_rate * 0.3)
         else:
-            # Fallen handled above, this is stopped+unstable
+            # Not upright, not fallen (tilted, sliding): mild shrink
             self.actor_competence = max(0.0, self.actor_competence - self.shrink_rate)
         
         self._recompute_cpg()
@@ -373,9 +500,10 @@ class CompetenceGate:
         return self.cpg_weight
 
     def get_stats(self):
+        is_stable = self._fall_rate < 5.0 and self._upright_ema > self.upright_threshold
         return {'actor_competence': self.actor_competence, 'cpg_weight': self.cpg_weight,
                 'vel_ema': self.vel_ema, 'fall_rate': self._fall_rate,
-                'upright_ema': self._upright_ema}
+                'upright_ema': self._upright_ema, 'is_stable': is_stable}
 
 
 def main():
@@ -431,6 +559,20 @@ def main():
     parser.add_argument('--neural-cpg', action='store_true',
                         help='Use Mogli Oscillator (SNN half-center CPG) instead of '
                              'mathematical SpinalCPG.')
+    parser.add_argument('--no-competence-gate', dest='no_competence_gate',
+                        action='store_true',
+                        help='Pin cpg_weight=1.0 (disable the CompetenceGate fade). '
+                             'CPG/OpenCat gait then runs at FULL amplitude with '
+                             'SNN/cerebellum corrections added on top -- identical in '
+                             'form to the hardware bridge. A/B control for the '
+                             'sim-cm-vs-hardware-m discrepancy (known_issue #60).')
+    parser.add_argument('--no-balance', dest='no_balance',
+                        action='store_true',
+                        help='Disable the OpenCatBalance controller (IMU->servo '
+                             'corrections) in simulation. Mirrors the hardware '
+                             'bridge with balance OFF (gb). A/B control for the '
+                             'sim ~38deg roll vs hardware ~10deg roll gap '
+                             '(Task #51, known_issue #60).')
     parser.add_argument('--legacy-cerebellum', action='store_true',
                         help='Disable Izhikevich on cerebellum AND allow R-STDP on '
                              'cerebellar weights. Reproduces v0.4.3 Go2 paper results '
@@ -661,9 +803,16 @@ def main():
         ctrl_lo = world._model.actuator_ctrlrange[:, 0].copy()
         ctrl_hi = world._model.actuator_ctrlrange[:, 1].copy()
         print(f'  PD Controller: Kp={pd_kp[0]:.0f}/{pd_kp[1]:.0f}/{pd_kp[2]:.0f}  Kd={pd_kd[0]:.1f}/{pd_kd[1]:.1f}/{pd_kd[2]:.1f}')
-        # Standing pose from keyframe
-        standing_qpos = world._data.qpos[7:7+n_act].copy()  # from keyframe reset
-        print(f'  Standing pose: {standing_qpos[:6]}...')
+        # Standing pose: must be in ACTUATOR order (not qpos order!)
+        # qpos order follows body-tree traversal, actuator order follows <actuator> section.
+        # These can differ (e.g. Bittle: qpos has RF,RR,LF,LR but ctrl has RF,LF,RR,LR).
+        import mujoco
+        standing_qpos = np.zeros(n_act)
+        for i in range(n_act):
+            joint_id = world._model.actuator_trnid[i, 0]
+            qpos_addr = world._model.jnt_qposadr[joint_id]
+            standing_qpos[i] = world._data.qpos[qpos_addr]
+        print(f'  Standing pose (actuator order): {np.degrees(standing_qpos).round(1)}')
         # Attach PD controller to creature (runs inside apply_motor_output, BEFORE world.step)
         pd_scale = profile.get('pd_scale', 0.5) if profile else 0.5
         pd_fallen_scale = profile.get('pd_fallen_scale', 1.5) if profile else 1.5
@@ -673,7 +822,12 @@ def main():
         }
         print(f'  PD scale: {pd_scale} (standing) / {pd_fallen_scale} (fallen)')
 
-    # Attach PD controller to creature object
+    # train_baby.py also needs to check native_position_control
+    if pd_controller and profile and profile.get('native_position_control', False):
+        pd_controller['native_position'] = True
+        print(f'  Position control: NATIVE (MuJoCo position actuators, no PD torque conversion)')
+    elif pd_controller:
+        print(f'  Position control: CUSTOM PD (torque actuators)')
     if pd_controller:
         creature._pd_controller = pd_controller
 
@@ -743,16 +897,55 @@ def main():
     print(f'  Closed-Loop: eval every {closed_loop.eval_interval} steps (autonomous adaptation)')
     creature._spinal_segments = spinal_segments
     creature._sim_dt = args.timestep
+    # For external MJCF (Go2, Bittle): use the model's actual timestep,
+    # not args.timestep which defaults to 0.005 and may differ.
+    if is_external_mjcf and hasattr(world, '_model') and world._model:
+        actual_dt = world._model.opt.timestep
+        if abs(actual_dt - args.timestep) > 1e-6:
+            print(f'  NOTE: Model timestep={actual_dt} differs from --timestep={args.timestep}, using model value')
+            args.timestep = actual_dt
+            creature._sim_dt = actual_dt
     print(f'  Spinal Segments: tone={spinal_segments.config.tone_gain:.2f}'
           f'  stretch={spinal_segments.config.stretch_gain:.2f}'
           f'  golgi@{spinal_segments.config.golgi_threshold:.2f}')
 
     # --- Load evolved CPG params or use defaults ---
-    if getattr(args, 'neural_cpg', False):
+    # CPG dimensions from profile (Bittle: 12/3 with abd=0; Freenove/Go2: 12/3)
+    _cpg_n_act = 12
+    _cpg_jpleg = 3
+    if profile and 'cpg_config' in profile:
+        _cpg_n_act = profile['cpg_config'].get('n_actuators', 12)
+        _cpg_jpleg = profile['cpg_config'].get('joints_per_leg', 3)
+
+    _use_opencat_gait = (getattr(args, 'neural_cpg', False)
+                         and profile and profile.get('joints_per_leg', 3) == 2)
+
+    if _use_opencat_gait:
+        # Bittle: use OpenCat controller (firmware-level abstraction)
+        from src.body.opencat_controller import OpenCatController
+        spinal_cpg = OpenCatController()
+        spinal_cpg.set_gait('trot')
+        print(f'  CPG: OPENCAT CONTROLLER (walk={spinal_cpg.cycle_time:.3f}s, '
+              f'{len(spinal_cpg._gait_frames)} frames, 50 Hz interpolated)')
+        print(f'    gaits: {spinal_cpg.available_gaits}')
+        print(f'    poses: {spinal_cpg.available_poses}')
+    elif getattr(args, 'neural_cpg', False):
         # Mogli Oscillator: SNN-based half-center CPG (Issue #111)
         mogli_cfg = MogliConfig()
-        spinal_cpg = MogliCPG(n_actuators=12, joints_per_leg=3, config=mogli_cfg)
+        # Apply creature-specific CPG amplitudes from profile
+        if profile and 'cpg_config' in profile:
+            pcpg = profile['cpg_config']
+            if 'hip_amplitude' in pcpg:
+                mogli_cfg.hip_amplitude = pcpg['hip_amplitude']
+            if 'knee_amplitude' in pcpg:
+                mogli_cfg.knee_amplitude = pcpg['knee_amplitude']
+            if 'abd_amplitude' in pcpg:
+                mogli_cfg.abd_amplitude = pcpg['abd_amplitude']
+            if 'maturation_steps' in pcpg:
+                mogli_cfg.maturation_steps = pcpg['maturation_steps']
+        spinal_cpg = MogliCPG(n_actuators=_cpg_n_act, joints_per_leg=_cpg_jpleg, config=mogli_cfg)
         print(f'  CPG: MOGLI OSCILLATOR v0.3.3 (8 Izhikevich neurons + dead-band vestibular + step-length steering)')
+        print(f'    n_actuators={_cpg_n_act}  joints_per_leg={_cpg_jpleg}')
         print(f'    w_mutual={mogli_cfg.w_mutual}  w_contra={mogli_cfg.w_contralateral}'
               f'  drive={mogli_cfg.tonic_drive_base}  amp={mogli_cfg.base_amplitude}→{mogli_cfg.max_amplitude}'
               f'  mat={mogli_cfg.maturation_steps}')
@@ -769,9 +962,59 @@ def main():
         spinal_cpg = SpinalCPG(n_actuators=12, joints_per_leg=3, config=cpg_cfg)
         print(f'  CPG: default params (no evolved config), freq={cpg_cfg.frequency}Hz')
 
+    # OpenCatGait is self-stable — spinal reflexes destabilize the gait.
+    # SNN/cerebellum corrections at reduced scale so the network can learn
+    # without overwhelming the stable CPG pattern.
+    _disable_reflexes = _use_opencat_gait
+    if _disable_reflexes:
+        creature.motor_scale = 0.3          # damped SNN — learn without destabilizing
+        creature._spinal_segments = None    # disable: OpenCat position control, not torque
+        _profile_balance = profile.get('opencat_balance', True) if profile else True
+        if getattr(args, 'no_balance', False) or not _profile_balance:
+            # A/B control (Task #51, #60) + profile default. Balance OFF mirrors the
+            # hardware bridge (balance not run on HW). Measured (knowledge #88):
+            # OpenCatBalance costs ~40% distance and is the only fall source in sim.
+            # Bittle profile sets opencat_balance:false; default True keeps
+            # Mogli/Freenove/Go2 behaviour unchanged.
+            creature._opencat_balance = None
+            _bal_why = '--no-balance' if getattr(args, 'no_balance', False) else 'profile'
+            print('  Motor overlays: SNN at 30%, reflexes OFF, spinal segments OFF, '
+                  f'OpenCat balance OFF ({_bal_why})')
+        else:
+            # OpenCat balance controller (IMU → servo corrections)
+            from src.body.opencat_balance import OpenCatBalance
+            creature._opencat_balance = OpenCatBalance(
+                n_actuators=world.n_actuators,
+                joint_mapping=[
+                    4,   # servo 0: RF shoulder -> OC joint 4
+                    8,   # servo 1: RF knee     -> OC joint 8
+                    5,   # servo 2: LF shoulder -> OC joint 5
+                    9,   # servo 3: LF knee     -> OC joint 9
+                    6,   # servo 4: RB shoulder -> OC joint 6
+                    10,  # servo 5: RB knee     -> OC joint 10
+                    7,   # servo 6: LB shoulder -> OC joint 7
+                    11,  # servo 7: LB knee     -> OC joint 11
+                ],
+                gain_scale=0.6,    # reduce gains for MuJoCo (real HW coefficients too aggressive)
+            )
+            print('  Motor overlays: SNN at 30%, reflexes OFF, spinal segments OFF, '
+                  'OpenCat balance ON')
+
     print(f'\n  -- Phase 2: Competence-Gated Handoff --')
-    gate = CompetenceGate(speed_threshold=0.03, cpg_min=0.40, cpg_max=0.9)
-    print(f'  Gate: CPG {gate.cpg_max:.0%} -> {gate.cpg_min:.0%} when actor speed > {gate.speed_threshold} m/s')
+    gate = CompetenceGate(grow_rate=0.0005, shrink_rate=0.0002,
+                          cpg_min=0.40, cpg_max=0.9, upright_threshold=0.6)
+    print(f'  Gate: CPG {gate.cpg_max:.0%} -> {gate.cpg_min:.0%} | pure IMU'
+          f'  upright>{gate.upright_threshold}  grow={gate.grow_rate}  shrink={gate.shrink_rate}')
+    if getattr(args, 'no_competence_gate', False):
+        # A/B control (#60): pin the gate so the CPG never fades -> the OpenCat
+        # gait runs at full amplitude + additive SNN/cerebellum, byte-for-form
+        # identical to bridge_bittle_wifi.py. Competence is still tracked (logged)
+        # but no longer attenuates the gait.
+        gate.cpg_min = 1.0
+        gate.cpg_max = 1.0
+        gate.cpg_weight = 1.0
+        print('  Gate: DISABLED via --no-competence-gate '
+              '(cpg_weight pinned 1.0 -> full CPG, bridge-equivalent gait application)')
 
     # --- Leg damage (Issue #133: leg-loss survival) ---
     _damaged_actuators = []
@@ -1166,14 +1409,23 @@ def main():
     print(f'  Gait Quality: {GAIT_QUALITY_VERSION} (analysis every {gait_cfg.analysis_interval} steps, buffer {gait_cfg.joint_buffer_size})')
 
     # --- Body Awareness (v0.7.0 Pillar 1) ---
+    # Dead-leg threshold: tuned for 12-DOF quadrupeds (Freenove/Go2).
+    # Smaller creatures (Bittle 8-DOF) have lower responsiveness due to
+    # smaller joint amplitudes — use profile-aware threshold.
+    _dead_thresh = 0.20  # default for 12-DOF
+    _ba_enabled = True
+    if profile and profile.get('joints_per_leg', 3) == 2:
+        _ba_enabled = False  # Bittle: amplitudes too small for reliable limb detection
     body_awareness = BodyAwareness(
         joints_per_leg=world.n_actuators // 4,
         n_legs=4,
         detection_delay=500,
-        dead_threshold=0.20,     # Dead legs consistently <0.18, healthy fluctuates 0.25+
-        degraded_threshold=0.35, # Below this = degraded
+        dead_threshold=_dead_thresh,
+        degraded_threshold=0.35,
     )
-    print(f'  Body Awareness: {BODY_AWARENESS_VERSION} (limb detection, auto-disconnect)')
+    body_awareness.enabled = _ba_enabled
+    print(f'  Body Awareness: {BODY_AWARENESS_VERSION} (limb detection, auto-disconnect)'
+          f'{" — DISABLED (small creature)" if not _ba_enabled else ""}')
 
     # --- Spatial Map (v0.7.0 Pillar 2) ---
     spatial_map = SpatialMap(world_size=10.0, grid_resolution=20)
@@ -1231,6 +1483,38 @@ def main():
         creature._prev_upright = upright
         is_fallen = creature.is_fallen()
         vel_mps = max(0.0, forward_vel / args.timestep)
+
+        # OpenCat recovery: physical firmware-style recovery (fold to 'dropped',
+        # then push 'up' to stand), mirroring the hardware bridge's kbalance
+        # recovery (#29) instead of a teleport reset. If 'up' does not right the
+        # body within a cycle, re-fold and retry (like the bridge's max_tries)
+        # so the robot keeps trying instead of freezing. The teleport auto-reset
+        # below is only a FAR fallback for this path (#25/#58).
+        _OC_DROP_HOLD = 80    # steps holding 'dropped' before pushing 'up'
+        _OC_CYCLE = 200       # full retry period: re-fold if still down after this
+        if _use_opencat_gait and is_fallen:
+            _oc = getattr(creature, '_oc_recovery_step', 0)
+            if _oc == 0:
+                # Just fell — fold legs into the 'dropped' pose
+                spinal_cpg.set_pose('dropped', speed=3.0)
+                creature._oc_recovery_step = 1
+                if step < 5000 or fall_count < 5:
+                    print(f'  [OPENCAT RECOVERY at step {step}]')
+            else:
+                _ph = _oc % _OC_CYCLE
+                if _ph == _OC_DROP_HOLD:
+                    spinal_cpg.set_pose('up', speed=2.0)        # push up to stand
+                elif _ph == 0:
+                    spinal_cpg.set_pose('dropped', speed=3.0)   # up failed: retry
+                creature._oc_recovery_step = _oc + 1
+        elif _use_opencat_gait and not is_fallen:
+            if getattr(creature, '_oc_recovery_step', 0) != 0:
+                # Was recovering, now upright — resume walking
+                spinal_cpg.set_gait('trot')
+                creature._oc_recovery_step = 0
+                recovery_count += 1
+                if step < 5000 or recovery_count < 5:
+                    print(f'  [OPENCAT RECOVERED at step {step}]')
 
         # v0.7.0: Heading-aligned velocity (reward forward motion in ANY direction)
         # Biology: a dog wants to move in the direction it's facing.
@@ -1317,9 +1601,10 @@ def main():
         if _ba_cmds is None:
             _ba_cmds = np.zeros(n_act)
         _ba_joints = world._data.qpos[7:7+n_act].copy() if len(world._data.qpos) > 7+n_act else np.zeros(n_act)
-        body_awareness.update(_ba_cmds, _ba_joints)
+        if _ba_enabled:
+            body_awareness.update(_ba_cmds, _ba_joints)
         # Check for limb state changes and auto-disconnect dead oscillators
-        for evt in body_awareness.get_events():
+        for evt in (body_awareness.get_events() if _ba_enabled else []):
             if evt['new_status'] == 'dead' and _is_mogli:
                 leg_map = {'FL': 0, 'FR': 1, 'RL': 2, 'RR': 3}
                 dead_idx = leg_map.get(evt['limb'])
@@ -1718,7 +2003,10 @@ def main():
                 prev_ball_dist = None  # Reset tracking
                 print(f'  [BALL EPISODE #{ball_episode_count} at step {step} — bd>{8.0:.0f}m, resetting]')
 
-        if auto_reset_limit > 0 and consecutive_fallen >= auto_reset_limit:
+        # OpenCat path: the physical pose-recovery above is primary; the teleport
+        # reset is only a far fallback, so give it 4x longer to right itself (#25).
+        _eff_reset_limit = auto_reset_limit * (4 if _use_opencat_gait else 1)
+        if auto_reset_limit > 0 and consecutive_fallen >= _eff_reset_limit:
             # Reset physics to standing pose (keyframe 0)
             if world._model.nkey > 0:
                 mujoco.mj_resetDataKeyframe(world._model, world._data, 0)
@@ -1985,6 +2273,8 @@ def main():
         creature.snn.neuromod_levels['da'] = float(da_signal)
 
         reflex_cmd = reflexes.compute(sensor_data, is_fallen, sim_dt=args.timestep)
+        if _disable_reflexes:
+            reflex_cmd = np.zeros_like(reflex_cmd)
 
         # Dynamic reflex scale — proportional to instability
         instability = max(0.0, 1.0 - upright)
@@ -2044,15 +2334,19 @@ def main():
         # Motor babbling: set per-leg noise when neonatal behavior active
         # Biology: fidgety movements (Prechtl 1997) create asymmetric
         # limb activity that shifts CoM → vestibular calibration signal.
-        if current_behavior == 'motor_babbling':
+        if current_behavior == 'motor_babbling' and hasattr(spinal_cpg, '_babbling_noise'):
             spinal_cpg._babbling_noise = 0.25  # 25% per-leg variation — gentle weight shifts
-        else:
+        elif hasattr(spinal_cpg, '_babbling_noise'):
             spinal_cpg._babbling_noise = 0.0
 
         # Terrain reflex: compute corrections + CPG modulation (Phase B)
         terrain_corr = terrain_reflex.compute(sensor_data)
         tr_freq = terrain_reflex.freq_scale
         tr_amp = terrain_reflex.amp_scale
+        if _disable_reflexes:
+            terrain_corr = np.zeros_like(terrain_corr)
+            tr_freq = 1.0
+            tr_amp = 1.0
 
         # VOR steering signal for CPG asymmetric amplitude (Issue #76d)
         # Biology: Reticulospinal projection modulates left/right CPG amplitude.
@@ -2298,6 +2592,18 @@ def main():
             if _dj < len(cpg_cmd):
                 cpg_cmd[_dj] = 0.0
 
+        # Creature-specific CPG output remapping (e.g. Bittle 12->8 with axis inversion)
+        # Skip if cpg_cmd is already 8-element (OpenCatGait outputs 8-element deltas directly)
+        if (profile and 'cpg_config' in profile and profile.get('n_joints', 12) < 12
+                and len(cpg_cmd) > 8):
+            from src.body.bittle import cpg_output_to_ctrl, STAND_CTRL
+            # cpg_output_to_ctrl extracts HIP+KNEE from 12-element output,
+            # remaps leg order, inverts rear shoulders, adds STAND_CTRL.
+            # But creature.apply_motor_output adds stand_angles itself,
+            # so we return the delta only (without STAND_CTRL).
+            _ctrl_8 = cpg_output_to_ctrl(cpg_cmd)  # STAND + delta
+            cpg_cmd = _ctrl_8 - STAND_CTRL          # delta only
+
         gate.update(step, vel_mps, is_fallen, upright=upright)
         cpg_weight = gate.get_cpg_weight()
         creature._cpg_cmd = cpg_cmd
@@ -2351,6 +2657,10 @@ def main():
                 'vestibular_discomfort': min(1.0, max(0.0, (abs(_yaw_rate) - 0.3) * 2.0)) if abs(_yaw_rate) > 0.3 else 0.0,
             },
         )
+
+        # === SNN DIAGNOSTICS (temporary) ===
+        if step % 500 == 0 and step <= 5000:
+            diagnose_snn(creature, step)
 
         # ================================================================
         # BABY-KI: Compute intrinsic reward for NEXT step's learning signal.
@@ -2831,6 +3141,7 @@ def main():
             line3 = (f'           beh:{beh_tag:<6s}  fq:{current_freq_scale:.2f}  am:{current_amp_scale:.2f}'
                      f'  rfx:{rs["active_reflexes"][:10]:<10s}  pos:{posture:<5s}  cpg:{cpg_weight:.0%}'
                      f'  act:{gs["actor_competence"]:.3f}  DA:{da_signal:.2f}'
+                     f'  uEMA:{gs.get("upright_ema", 0):.2f}  fR:{gs.get("fall_rate", 0):.1f}  vE:{gs.get("vel_ema", 0):.4f}  stb:{"Y" if gs.get("is_stable", False) else "N"}'
                      f'  CF:{cb_stats.get("cf_magnitude", 0.0):.3f}'
                      f'  corr:{cb_stats.get("correction_magnitude", 0.0):.4f}'
                      f'  reb:{cb_stats.get("dcn_rebound_strength", 0.0):.3f}'
@@ -2925,7 +3236,7 @@ def main():
         'vel_ema': gate.vel_ema,
         'cpg_phases': spinal_cpg._phases.tolist() if hasattr(spinal_cpg, '_phases') else [],
         'cpg_step': spinal_cpg._step,
-        'cpg_type': 'mogli' if getattr(args, 'neural_cpg', False) else 'spinal',
+        'cpg_type': 'opencat' if _use_opencat_gait else ('mogli' if getattr(args, 'neural_cpg', False) else 'spinal'),
         'version': 'v0.4.3', 'scene': args.scene, 'seed': args.seed,
         'terrain_type': terrain_cfg.terrain_type, 'terrain_difficulty': terrain_cfg.difficulty,
         'flog_path': flog_path,
@@ -2966,8 +3277,13 @@ def main():
             'ball_episodes': getattr(main, '_ball_ep', 0),
             'run_id': os.path.basename(ckpt_dir),
         }
-        save_brain(creature.brain, creature.snn, brain_file, metadata=brain_meta)
-        print(f'  Brain saved: {brain_file}')
+        # Issue #159: persist the cerebellum INTO brain.pt (the transfer
+        # artifact), not only into checkpoint.pt (which is --resume-only).
+        # cb is None if --no-cerebellum; save_brain handles None safely.
+        save_brain(creature.brain, creature.snn, brain_file, metadata=brain_meta,
+                   cerebellum=cb)
+        print(f'  Brain saved: {brain_file}'
+              f'{" (incl. cerebellum)" if cb else " (no cerebellum)"}')
         # History snapshot (timestamped copy for comparison)
         history_dir = os.path.join(brain_dir, 'history')
         os.makedirs(history_dir, exist_ok=True)

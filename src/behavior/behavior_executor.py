@@ -4,6 +4,9 @@ MH-FLOCKE — Behavior Executor v0.4.1
 CPG modulation from behavior state (frequency, amplitude).
 """
 
+__version__ = "0.4.1"
+__logbook__ = 137
+
 import numpy as np
 from typing import Dict, Optional, Tuple
 from dataclasses import dataclass

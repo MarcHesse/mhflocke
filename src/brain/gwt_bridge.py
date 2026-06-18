@@ -4,6 +4,9 @@ MH-FLOCKE — Global Workspace v0.4.1
 Module competition for attentional broadcast (Baars, 1988).
 """
 
+__version__ = "0.4.1"
+__logbook__ = 99
+
 import torch
 import numpy as np
 from typing import Dict, List, Optional

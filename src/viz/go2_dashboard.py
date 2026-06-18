@@ -4,6 +4,9 @@ MH-FLOCKE — Go2 Dashboard v0.4.3
 PIL-based dashboard overlay for video rendering.
 """
 
+__version__ = "0.4.3"
+__logbook__ = 152
+
 import gc
 import math
 import numpy as np

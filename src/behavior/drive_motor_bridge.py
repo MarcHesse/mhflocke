@@ -4,6 +4,9 @@ MH-FLOCKE — Drive-Motor Bridge v0.4.1
 Maps motivational drives to motor pattern parameters.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 138
+
 import logging
 from typing import Dict, Optional, Tuple
 

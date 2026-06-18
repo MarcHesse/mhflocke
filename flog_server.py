@@ -13,6 +13,9 @@ Usage:
     python flog_server.py --flog creatures/mogli/v001_.../training_log.bin
 """
 
+__version__ = "0.1.0"
+__logbook__ = 157
+
 import os
 import sys
 import json

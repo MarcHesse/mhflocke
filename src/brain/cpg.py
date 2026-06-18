@@ -4,6 +4,13 @@ MH-FLOCKE — CPG Core v0.4.1
 Phase-coupled oscillator network for rhythmic gait generation.
 """
 
+__version__ = "0.4.1"     # module version (MAJOR.MINOR; MAJOR = contract change)
+__logbook__ = 28          # mh-logbuch module entry
+__status__  = "veraltet"  # active | veraltet | neu — superseded by SpinalCPG/MogliCPG;
+                          # still imported in work (llm_bridge, train_v030,
+                          # train_mogli_live, test_cpg_only) — do not delete until
+                          # migrated (task #46).
+
 import numpy as np
 import json
 import os

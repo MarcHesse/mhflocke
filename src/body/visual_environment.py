@@ -16,6 +16,9 @@ chemotaxis (bacterial navigation). Berg & Brown 1972 applies to both.
 API matches SensoryEnvironment so train_baby.py can swap with a flag.
 """
 
+__version__ = "0.1.0"
+__logbook__ = 134
+
 import numpy as np
 import logging
 from typing import Optional, Dict, Tuple, List

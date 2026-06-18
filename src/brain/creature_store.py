@@ -4,6 +4,9 @@ MH-FLOCKE — Creature Store v0.4.1
 FLOG binary logger for training data.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 112
+
 import json
 import struct
 import time

@@ -4,6 +4,10 @@ MH-FLOCKE — Multi-Compartment Neurons v0.4.1
 Soma-basal-apical compartment model with burst mode.
 """
 
+__version__ = "0.4.1"     # module version (MAJOR.MINOR; MAJOR = contract change)
+__logbook__ = 24          # mh-logbuch module entry
+__status__  = "active"    # active | veraltet | neu
+
 import torch
 import numpy as np
 from typing import Dict, Optional, Tuple

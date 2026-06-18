@@ -4,6 +4,9 @@ MH-FLOCKE — Creature State v0.4.1
 Runtime state tracking for creature instances.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 124
+
 import torch
 import numpy as np
 import json

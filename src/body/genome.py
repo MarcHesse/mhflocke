@@ -4,6 +4,9 @@ MH-FLOCKE — Genome v0.4.1
 Genetic encoding for creature morphology and neural parameters.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 125
+
 import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Tuple

@@ -4,6 +4,9 @@ MH-FLOCKE — FLOG Replay v0.4.1
 Binary FLOG reader for training data analysis and visualization.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 151
+
 import os
 import csv
 import json

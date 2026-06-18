@@ -2,6 +2,44 @@
 
 All notable changes to MH-FLOCKE. Dates are YYYY-MM-DD.
 
+## v0.8.0 — Bittle-only Public Release (2026-06-18)
+
+The public `main` branch is now scoped to the Petoi Bittle X. The earlier Go2 and Freenove
+platforms are preserved as tags, not deleted, and dropped from `main`.
+
+### Platform freeze (preserve ≠ delete)
+- **Go2 + Freenove kept as paper checkpoints**: `v0.4.1-paper1` (Go2 ablation), `v0.4.3-paper2`
+  (Freenove sim-to-real). Reproduce either with `git checkout <tag>`.
+- **Snapshot tag `v0.7-go2-freenove-final`** captures the last `main` that still carried both
+  platforms (creatures, bridges, benchmarks) before the Bittle-only trim.
+- 39 Go2/Freenove sources removed from `main`: `creatures/go2/`, `creatures/freenove/`, the Go2/
+  Freenove renderers and bridges, the PPO baseline, the PCI benchmark, and `FREENOVE_PI_DEPLOY.md`.
+
+### Manifest-driven public sync
+- The public file set is now resolved from an explicit, generated manifest
+  (`scripts/build_v080_manifest.py`): the transitive `import src.*` closure of the Bittle entry
+  points plus the static Bittle assets — no wildcard copy, no Go2/Freenove code dragged along.
+- Sync runs from that manifest (`scripts/sync_from_manifest.py`) with a private-pattern leak
+  scan and an orphan report. Run outputs, checkpoints (`*.pt`/`*.bin`), the raw STL set, bridge
+  telemetry, `*.bat`, and internal docs stay private.
+- `.gitignore` extended for the Bittle-only split (raw `creatures/*/meshes/`, `creatures/*/bridge_*/`,
+  `*.stl`, `*.bin`, `*.bat`).
+
+### README rewritten Bittle-first + honest-claims sweep
+- README is now Bittle-first; Go2/Freenove appear only as referenced paper tags.
+- Overclaim language removed. The headline no longer says "no end-to-end RL required". The
+  published B benchmark (Go2, 45.15 m) is now framed honestly: it trains on an external shaped
+  reward `R_ext = 0.8·v_forward + 0.2·upright` via R-STDP on top of an innate CPG gait; the SNN +
+  cerebellum's own marginal contribution over CPG-only is ≈+11% distance plus a variance collapse
+  and zero falls. "From scratch / no reward shaping / no external reward" describe only the
+  separate intrinsic-reward (`train_baby --reward-blend 0`) line, never the benchmark numbers.
+
+### Package version
+- `src/__init__.py` → `0.8.0` (closes the prior drift where `__init__` and tags disagreed with
+  the CHANGELOG prose).
+
+---
+
 ## v0.5.1 — PID Steering + Meta-Learning Loop (2026-05-05)
 
 ### Asymmetric Stride Steering (replaces Z-offset)

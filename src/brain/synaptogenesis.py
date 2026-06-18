@@ -4,6 +4,9 @@ MH-FLOCKE — Synaptogenesis v0.4.1
 Activity-dependent synapse formation with astrocyte gating.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 105
+
 import torch
 import numpy as np
 from typing import Dict, List, Optional, Tuple

@@ -4,6 +4,9 @@ MH-FLOCKE — World Model v0.4.1
 Spiking world model with prediction error and dream-based consolidation.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 104
+
 import torch
 import numpy as np
 from typing import Dict, Optional, List, Tuple

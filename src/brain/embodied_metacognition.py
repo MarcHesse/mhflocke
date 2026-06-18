@@ -4,6 +4,9 @@ MH-FLOCKE — Embodied Metacognition v0.4.1
 Self-assessment of confidence, learning progress, and consciousness level (PCI).
 """
 
+__version__ = "0.4.1"
+__logbook__ = 108
+
 import numpy as np
 from typing import Dict, Optional, List
 from collections import deque

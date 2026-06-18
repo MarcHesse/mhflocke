@@ -4,6 +4,9 @@ MH-FLOCKE — Visual Orienting v0.4.1
 Vestibulo-ocular reflex and visual attention.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 121
+
 import numpy as np
 from dataclasses import dataclass
 from typing import Optional

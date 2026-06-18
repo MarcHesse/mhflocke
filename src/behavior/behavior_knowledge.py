@@ -4,6 +4,9 @@ MH-FLOCKE — Behavior Knowledge v0.4.1
 Built-in behavioral repertoire for creature types.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 135
+
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 

@@ -4,6 +4,9 @@ MH-FLOCKE — Scene Builder v0.4.1
 Scene composition from terrain, objects, and creatures.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 132
+
 import os
 import copy
 from typing import Dict, List, Optional

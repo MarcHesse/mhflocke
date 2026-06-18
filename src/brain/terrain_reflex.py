@@ -4,6 +4,9 @@ MH-FLOCKE — Terrain Reflex v0.4.1
 Adaptive reflexes for terrain variation.
 """
 
+__version__ = "0.4.1"
+__logbook__ = 111
+
 import numpy as np
 from dataclasses import dataclass
 from typing import Dict, Optional, List
@@ -194,6 +197,35 @@ class TerrainReflex:
         """
         if not self.config.enabled:
             return np.zeros(self.n_act)
+        
+        # For <12 DOF creatures (e.g. Bittle 8-DOF), compute on 12-element
+        # array internally then extract HIP+KNEE per leg.
+        if self.n_act < 12:
+            return self._compute_remapped(sensor_data)
+        
+        return self._compute_12dof(sensor_data)
+    
+    def _compute_remapped(self, sensor_data: Dict) -> np.ndarray:
+        """Compute terrain corrections for <12 DOF by remapping from 12-DOF."""
+        # Save and temporarily override n_act
+        orig_n_act = self.n_act
+        self.n_act = 12
+        corr_12 = self._compute_12dof(sensor_data)
+        self.n_act = orig_n_act
+        
+        # Extract HIP (index 1) and KNEE (index 2) per leg, skip ABD (index 0)
+        jpleg = orig_n_act // 4  # 2 for Bittle
+        corr_out = np.zeros(orig_n_act)
+        for leg in range(4):
+            # From 12-DOF: leg*3+1 = hip, leg*3+2 = knee
+            # To n-DOF: leg*jpleg+0 = hip, leg*jpleg+1 = knee
+            if jpleg >= 1:
+                corr_out[leg * jpleg + 0] = corr_12[leg * 3 + 1]  # hip
+            if jpleg >= 2:
+                corr_out[leg * jpleg + 1] = corr_12[leg * 3 + 2]  # knee
+        return corr_out
+    
+    def _compute_12dof(self, sensor_data: Dict) -> np.ndarray:
         
         self._step += 1
         
