@@ -1,6 +1,6 @@
 # MH-FLOCKE
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19336894.svg)](https://doi.org/10.5281/zenodo.19336894)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.19336894-blue.svg)](https://doi.org/10.5281/zenodo.19336894)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](http://www.apache.org/licenses/LICENSE-2.0)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
