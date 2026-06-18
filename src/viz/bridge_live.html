@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<!--
+  MH-FLOCKE - Bittle Bridge Live Dashboard
+  =========================================
+  Standalone live view for a hardware bridge run (scripts/bridge_bittle_wifi.py
+  --dashboard). Connects to the dashboard_views WebSocket broadcaster on
+  ws://localhost:5001 and renders the per-step telemetry pushed via
+  update_training_state({source:'bittle-bridge', step, hz, pitch, roll, yaw,
+  reward, snn_corr, cb_corr, steering, fallen, recoveries}).
+
+  No build step, no dependencies. Just open this file in a browser while the
+  bridge is running. Works equally for any run that pushes 'training_update'
+  (so a future train_baby --dashboard would render here too).
+
+  Server side needs: pip install websockets
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bittle - Live</title>
+<style>
+  :root{
+    --bg:#0a0e17; --panel:#111827; --panel2:#0d1422;
+    --accent:#00d4ff; --ok:#3ddc84; --warn:#ffb020; --bad:#ff4d5e;
+    --txt:#e6edf3; --dim:#7d8aa0; --grid:#1c2740;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font:14px/1.4 'Segoe UI',system-ui,sans-serif;padding:18px}
+  h1{font-size:17px;margin:0;font-weight:600;letter-spacing:.3px}
+  h1 small{color:var(--dim);font-weight:400;font-size:12px;margin-left:8px}
+  .top{display:flex;align-items:center;justify-content:space-between;
+    margin-bottom:16px;gap:12px;flex-wrap:wrap}
+  .conn{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--dim)}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--bad);
+    box-shadow:0 0 8px var(--bad);transition:.2s}
+  .dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
+    gap:14px}
+  .card{background:var(--panel);border:1px solid var(--grid);border-radius:10px;
+    padding:14px 16px}
+  .card h2{font-size:11px;text-transform:uppercase;letter-spacing:1px;
+    color:var(--dim);margin:0 0 10px;font-weight:600}
+  .big{font-size:30px;font-weight:600;font-variant-numeric:tabular-nums}
+  .big small{font-size:13px;color:var(--dim);font-weight:400}
+  .row{display:flex;justify-content:space-between;align-items:baseline;
+    padding:4px 0;font-variant-numeric:tabular-nums}
+  .row .k{color:var(--dim);font-size:12px}
+  .row .v{font-weight:600}
+  canvas{display:block;width:100%;border-radius:6px;background:var(--panel2)}
+  .bar{height:10px;background:var(--panel2);border-radius:5px;overflow:hidden;
+    margin:6px 0 12px}
+  .bar > i{display:block;height:100%;width:0;background:var(--accent);
+    transition:width .12s linear}
+  .status{font-size:22px;font-weight:700;letter-spacing:.5px}
+  .status.ok{color:var(--ok)} .status.fall{color:var(--bad)}
+  .att{position:relative}
+  .pill{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;
+    background:var(--panel2);color:var(--dim)}
+  .axisrow{display:flex;align-items:center;gap:10px;margin:8px 0}
+  .axisrow label{width:42px;color:var(--dim);font-size:12px}
+  .axisrow .track{flex:1;height:14px;background:var(--panel2);border-radius:7px;
+    position:relative}
+  .axisrow .track .mid{position:absolute;left:50%;top:0;bottom:0;width:1px;
+    background:var(--grid)}
+  .axisrow .track .fill{position:absolute;top:2px;bottom:2px;border-radius:5px;
+    background:var(--accent);transition:.1s}
+  .axisrow .val{width:62px;text-align:right;font-variant-numeric:tabular-nums;
+    font-weight:600}
+  .stale{opacity:.45}
+</style>
+</head>
+<body>
+  <div class="top">
+    <h1>Bittle &mdash; Live <small id="src">hardware bridge</small></h1>
+    <div class="conn"><span class="dot" id="dot"></span><span id="connTxt">connecting&hellip;</span>
+      <span class="pill" id="hz">-- Hz</span></div>
+  </div>
+
+  <div class="grid">
+
+    <div class="card">
+      <h2>Status</h2>
+      <div class="status ok" id="status">WAITING</div>
+      <div class="row"><span class="k">Step</span><span class="v" id="step">0</span></div>
+      <div class="row"><span class="k">Recoveries</span><span class="v" id="rec">0</span></div>
+      <div class="row"><span class="k">Steering</span><span class="v" id="steer">0.00</span></div>
+    </div>
+
+    <div class="card att">
+      <h2>IMU attitude (deg)</h2>
+      <div class="axisrow"><label>Pitch</label>
+        <div class="track"><div class="mid"></div><div class="fill" id="f-pitch"></div></div>
+        <div class="val" id="v-pitch">0.0</div></div>
+      <div class="axisrow"><label>Roll</label>
+        <div class="track"><div class="mid"></div><div class="fill" id="f-roll"></div></div>
+        <div class="val" id="v-roll">0.0</div></div>
+      <div class="axisrow"><label>Yaw</label>
+        <div class="track"><div class="mid"></div><div class="fill" id="f-yaw"></div></div>
+        <div class="val" id="v-yaw">0.0</div></div>
+    </div>
+
+    <div class="card">
+      <h2>Intrinsic reward</h2>
+      <div class="big"><span id="reward">0.000</span></div>
+      <canvas id="spark" height="64"></canvas>
+    </div>
+
+    <div class="card">
+      <h2>Learning signals</h2>
+      <div class="row"><span class="k">SNN max correction</span><span class="v" id="snnv">0.000</span></div>
+      <div class="bar"><i id="snnb"></i></div>
+      <div class="row"><span class="k">Cerebellum max correction</span><span class="v" id="cbv">0.000</span></div>
+      <div class="bar"><i id="cbb"></i></div>
+    </div>
+
+  </div>
+
+<script>
+(function(){
+  const WS_URL = "ws://localhost:5001";
+  const $ = id => document.getElementById(id);
+
+  // ---- reward sparkline ----
+  const spark = $("spark"), sctx = spark.getContext("2d");
+  let hist = [], HMAX = 240;
+  function sizeCanvas(){ spark.width = spark.clientWidth * devicePixelRatio;
+    spark.height = 64 * devicePixelRatio; sctx.scale(devicePixelRatio,devicePixelRatio); }
+  function drawSpark(){
+    const w = spark.clientWidth, h = 64;
+    sctx.setTransform(1,0,0,1,0,0); sctx.clearRect(0,0,spark.width,spark.height);
+    sctx.scale(devicePixelRatio,devicePixelRatio);
+    if(hist.length<2) return;
+    let lo=Math.min(...hist), hi=Math.max(...hist);
+    if(hi-lo<1e-6){ hi+=0.5; lo-=0.5; }
+    const span=hi-lo, n=hist.length;
+    // zero line
+    const zy = h - ((0-lo)/span)*h;
+    if(zy>=0&&zy<=h){ sctx.strokeStyle="#1c2740"; sctx.beginPath();
+      sctx.moveTo(0,zy); sctx.lineTo(w,zy); sctx.stroke(); }
+    sctx.strokeStyle="#00d4ff"; sctx.lineWidth=1.5; sctx.beginPath();
+    hist.forEach((v,i)=>{ const x=(i/(HMAX-1))*w, y=h-((v-lo)/span)*h;
+      i?sctx.lineTo(x,y):sctx.moveTo(x,y); });
+    sctx.stroke();
+  }
+  window.addEventListener("resize",()=>{sizeCanvas();drawSpark();});
+  sizeCanvas();
+
+  // ---- attitude bars: map +/-90deg to a centered fill ----
+  function setAxis(fillId,valId,deg){
+    const d=Math.max(-90,Math.min(90,deg||0));
+    const f=$(fillId), pct=Math.abs(d)/90*50;   // half-width max
+    if(d>=0){ f.style.left="50%"; f.style.right="auto"; f.style.width=pct+"%"; }
+    else    { f.style.right="50%"; f.style.left="auto"; f.style.width=pct+"%"; }
+    f.style.background = Math.abs(d)>50 ? "#ff4d5e" : (Math.abs(d)>25 ? "#ffb020" : "#00d4ff");
+    $(valId).textContent=(deg||0).toFixed(1);
+  }
+  function setBar(barId,valId,v,scale){
+    const x=Math.max(0,Math.min(1,(v||0)/scale));
+    $(barId).style.width=(x*100)+"%";
+    $(valId).textContent=(v||0).toFixed(3);
+  }
+
+  // ---- staleness watchdog ----
+  let lastMsg=0;
+  setInterval(()=>{
+    const stale = Date.now()-lastMsg>1500;
+    document.body.classList.toggle("stale", stale && lastMsg>0);
+    if(stale) $("hz").textContent="-- Hz";
+  },500);
+
+  function render(m){
+    lastMsg=Date.now();
+    if(m.source) $("src").textContent=m.source;
+    $("step").textContent = m.step ?? 0;
+    $("rec").textContent  = m.recoveries ?? 0;
+    $("steer").textContent= (m.steering||0).toFixed(2);
+    $("hz").textContent   = (m.hz!=null? m.hz.toFixed(1):"--")+" Hz";
+
+    const st=$("status");
+    if(m.fallen){ st.textContent="FALLEN / RECOVERING"; st.className="status fall"; }
+    else        { st.textContent="UPRIGHT";             st.className="status ok"; }
+
+    setAxis("f-pitch","v-pitch", m.pitch);
+    setAxis("f-roll","v-roll",   m.roll);
+    setAxis("f-yaw","v-yaw",     m.yaw);
+
+    $("reward").textContent=(m.reward||0).toFixed(3);
+    hist.push(m.reward||0); if(hist.length>HMAX) hist.shift(); drawSpark();
+
+    setBar("snnb","snnv", m.snn_corr, 0.5);
+    setBar("cbb","cbv",   m.cb_corr,  0.5);
+  }
+
+  // ---- websocket with auto-reconnect ----
+  let ws=null, retry=0;
+  function connect(){
+    $("connTxt").textContent="connecting\u2026";
+    ws=new WebSocket(WS_URL);
+    ws.onopen=()=>{ retry=0; $("dot").classList.add("on"); $("connTxt").textContent="connected"; };
+    ws.onmessage=ev=>{ let m; try{m=JSON.parse(ev.data);}catch(e){return;}
+      if(m.type==="training_update") render(m); };
+    ws.onclose=()=>{ $("dot").classList.remove("on");
+      $("connTxt").textContent="disconnected \u2014 retrying";
+      retry=Math.min(retry+1,10); setTimeout(connect, 400*retry); };
+    ws.onerror=()=>{ try{ws.close();}catch(e){} };
+  }
+  connect();
+})();
+</script>
+</body>
+</html>

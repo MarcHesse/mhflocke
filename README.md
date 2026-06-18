@@ -108,15 +108,32 @@ robot over a WiFi WebSocket, using the **same `src/brain/` code** as the simulat
 codebase, two platforms. OpenCat's onboard balance is disabled so the motor commands pass
 through unmodified.
 
+The bridge needs `websocket-client`; the live `--dashboard` additionally needs `websockets`
+(both are in `requirements.txt`). Each run writes per-step telemetry and the learned weights to
+`creatures/bittle/bridge_<timestamp>/`.
+
 ```bash
-# Connect over WiFi and verify the IMU / control channel
-# (replace <robot-ip> with the Bittle's address on your network)
+# 1) Verify the WiFi / IMU channel — no motion, just reads the IMU.
+#    Replace <robot-ip> with the Bittle's address on your network.
 python scripts/bridge_bittle_wifi.py --ip <robot-ip>
+
+# 2) Live gait: the innate OpenCat Trot with a fresh SNN learning on top via R-STDP.
+#    No pre-trained brain needed — intrinsic drives (vestibular, curiosity) supply the reward.
+python scripts/bridge_bittle_wifi.py --ip <robot-ip> --gait-loop --snn --duration 30
+
+# 3) Same run, plus the live telemetry dashboard. Open the local file
+#    src/viz/bridge_live.html directly in a browser (double-click or a file:// URL);
+#    it connects to the bridge's WebSocket. Do NOT browse to localhost:5001 — that
+#    port is a raw WebSocket, not a web page.
+python scripts/bridge_bittle_wifi.py --ip <robot-ip> --gait-loop --snn --dashboard --duration 30
 ```
 
-Transferring a sim-trained SNN brain to the real robot is part of the active sim-to-real work
-(see the note below); the bridge exposes `--snn` and `--cerebellum` for it. Closed-loop yaw
-correction uses the IMU so the robot compensates mechanical drift, surface, and battery level.
+To load a simulation-trained brain instead of learning fresh, pass `--snn-brain <path/to/brain.pt>`
+(sim-to-real transfer is active research — see the note below); `--cerebellum` adds the cerebellar
+drift correction, and `--yaw-pid` closes an IMU yaw loop so the robot compensates mechanical
+drift, surface, and battery level. The Bittle does **not** self-right from a supine fall — set it
+upright by hand, or pass `--recover` to drive the OpenCat stand posture on side/forward falls
+(learned weights are kept).
 
 > **Sim-to-real note.** Closing the simulation-to-hardware gap on the Bittle is an active
 > research arc, not a solved benchmark. Distances and roll amplitudes differ between sim and
