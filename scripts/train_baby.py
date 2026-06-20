@@ -1265,7 +1265,7 @@ def main():
                 'difficulty': terrain_cfg.difficulty,
                 'steps': total_steps,
                 'device': device,
-                'version': 'v0.4.3',
+                'version': 'v0.8.1',
                 'n_neurons': creature.snn.config.n_neurons,
                 'population_sizes': {
                     'n_input': creature.n_input_neurons,
@@ -2925,6 +2925,19 @@ def main():
                 flog_data['emotion_dominant'] = emo.get('dominant_emotion', '')
                 flog_data['valence'] = emo.get('valence', 0.0)
                 flog_data['arousal'] = emo.get('arousal', 0.0)
+                # Real neuromodulator levels — no derived/placeholder values.
+                # cognitive_brain sets da/5ht/ne/ach in snn.neuromod_levels from
+                # somatic markers; process() exposes them as brain_result['neuromod'].
+                # DA is already logged as 'da_reward'. Write the real 5HT/NE/ACh when
+                # present; if the cognitive path is inactive the key is omitted and the
+                # overlay shows its fallback rather than a placeholder.
+                _neuromod = brain_result.get('neuromod', {})
+                if '5ht' in _neuromod:
+                    flog_data['serotonin'] = float(_neuromod['5ht'])
+                if 'ne' in _neuromod:
+                    flog_data['noradrenaline'] = float(_neuromod['ne'])
+                if 'ach' in _neuromod:
+                    flog_data['acetylcholine'] = float(_neuromod['ach'])
                 flog_data['drive_dominant'] = drv_r.get('dominant', '')
                 flog_data['curiosity_reward'] = brain_result.get('curiosity_reward', 0.0)
                 # Baby-KI intrinsic reward components
@@ -3093,6 +3106,33 @@ def main():
                     flog_data['mh_spike_count'] = 0
                     flog_data['mh_spike_rate'] = 0.0
                     flog_data['mh_n_neurons'] = 0
+                # Log the real per-neuron spike raster so the Brain3D shows genuine
+                # activity, never a fabricated one. Ordered by population to match the
+                # brain_3d layout (input → granule → golgi → purkinje → dcn →
+                # motor_hidden → output). If unavailable the key is omitted → Brain3D
+                # shows no activity (empty), never random.
+                try:
+                    if hasattr(creature, '_accumulated_spikes'):
+                        _acc = creature._accumulated_spikes
+                        if hasattr(_acc, 'detach'):
+                            _acc = _acc.detach().cpu().numpy()
+                        _acc = np.asarray(_acc).reshape(-1)
+                        _pops = creature.snn.populations
+                        _order = ['input', 'granule_cells', 'golgi_cells',
+                                  'purkinje_cells', 'dcn', 'motor_hidden', 'output']
+                        _parts = []
+                        for _pn in _order:
+                            _pop = _pops.get(_pn, [])
+                            _idx = np.asarray(list(_pop), dtype=int) if len(_pop) else None
+                            if _idx is not None and _idx.size:
+                                _parts.append((_acc[_idx] > 0).astype(int))
+                        if _parts:
+                            # Key 'spike_raster' (NOT 'spikes') on purpose: 'spikes'
+                            # collides with record_training's spikes= param, which
+                            # down-samples to 200 and breaks the population layout.
+                            flog_data['spike_raster'] = np.concatenate(_parts).tolist()
+                except Exception:
+                    pass
                 # Mogli Oscillator stats (per-leg phase, firing rates, coupling)
                 if hasattr(spinal_cpg, 'oscillators'):
                     mogli_stats = spinal_cpg.get_stats()
@@ -3237,7 +3277,7 @@ def main():
         'cpg_phases': spinal_cpg._phases.tolist() if hasattr(spinal_cpg, '_phases') else [],
         'cpg_step': spinal_cpg._step,
         'cpg_type': 'opencat' if _use_opencat_gait else ('mogli' if getattr(args, 'neural_cpg', False) else 'spinal'),
-        'version': 'v0.4.3', 'scene': args.scene, 'seed': args.seed,
+        'version': 'v0.8.1', 'scene': args.scene, 'seed': args.seed,
         'terrain_type': terrain_cfg.terrain_type, 'terrain_difficulty': terrain_cfg.difficulty,
         'flog_path': flog_path,
         'flog_frames': recorder.frame_count if recorder else 0,

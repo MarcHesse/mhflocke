@@ -191,19 +191,24 @@ def main():
         if t < 5.0:
             _ctext(d, cx, SAFE_TOP + 20, 'THIS ROBOT TAUGHT', f_hook, WHITE)
             _ctext(d, cx, SAFE_TOP + 72, 'ITSELF TO WALK', f_hook, WHITE)
-            _ctext(d, cx, SAFE_TOP + 140, 'no reward', f_cap, GOLD)
+            _ctext(d, cx, SAFE_TOP + 140, 'no external reward', f_cap, GOLD)
         else:
             beh = str(stats.get('behavior', ''))
             cap = CAPTION.get(beh, beh.replace('_', ' '))
             if cap:
                 _ctext(d, cx, SAFE_TOP + 20, cap, f_cap, CYAN)
 
-        # Neuron band
+        # Neuron band — real spike raster from the FLOG only.
+        n_spiking = None
         if brain_fn:
             try:
-                snn_mix = stats.get('snn_mix', 0.1)
-                act = max(0.03, min(0.15, snn_mix * 0.2))
-                raster = np.random.binomial(1, act, 350).astype(float)
+                raster_data = stats.get('spike_raster', stats.get('spikes', None))
+                if raster_data is not None:
+                    raster = np.asarray(raster_data, dtype=float)
+                    n_spiking = int((raster > 0).sum())
+                else:
+                    # No real spikes in this frame -> show none, never fabricate.
+                    raster = np.zeros(350, dtype=float)
                 bimg, brain_state = brain_fn(raster, width=BRAIN_W, height=BRAIN_H,
                                              n_display=350, state=brain_state, brain_state=stats)
                 brgba = bimg.convert('RGBA')
@@ -211,7 +216,8 @@ def main():
                 brgba.close(); bimg.close()
             except Exception as e:
                 if vf == 0: print(f'  Brain3D error: {e}')
-        _ctext(d, cx, BRAIN_Y - 30, f'{n_neurons} spiking neurons', f_lbl, ICE)
+        _band_lbl = f'{n_spiking} neurons firing' if n_spiking is not None else f'{n_neurons} neurons'
+        _ctext(d, cx, BRAIN_Y - 30, _band_lbl, f_lbl, ICE)
 
         # CPG -> SNN bar
         cpg = stats.get('cpg_weight', 0.9); snn = 1 - cpg
@@ -225,7 +231,7 @@ def main():
         _ctext(d, cx, by + 24, 'the brain takes over', f_lbl, GREY)
 
         _ctext(d, cx, 18, 'MH-FLOCKE', f_small, GREY)
-        _ctext(d, cx, OUT_H - 36, 'no reward · open source · mhflocke.com', f_small, GREY)
+        _ctext(d, cx, OUT_H - 36, 'no external reward · open source · mhflocke.com', f_small, GREY)
         ffmpeg.stdin.write(np.array(canvas).tobytes())
         if vf % 60 == 0:
             print(f'  body {vf}/{n_body}  step:{step}  beh:{stats.get("behavior","")}  cpg:{cpg:.0%}')
@@ -239,7 +245,7 @@ def main():
         canvas = Image.new('RGB', (OUT_W, OUT_H), BG); d = ImageDraw.Draw(canvas); cx = OUT_W // 2; cy = OUT_H // 2
         _ctext(d, cx, cy - 150, 'A robot dog that', f_m, ICE)
         _ctext(d, cx, cy - 104, 'taught itself to walk', f_m, ICE)
-        _ctext(d, cx, cy - 14, 'NO REWARD', f_b, GOLD)
+        _ctext(d, cx, cy - 14, 'NO EXTERNAL REWARD', f_b, GOLD)
         _ctext(d, cx, cy + 80, 'Full video on YouTube', f_s, CYAN)
         _ctext(d, cx, cy + 128, 'MH-FLOCKE · mhflocke.com', f_s, WHITE)
         ffmpeg.stdin.write(np.array(canvas).tobytes())

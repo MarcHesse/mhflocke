@@ -30,7 +30,7 @@ except ImportError:
 
 BITTLE_XML = os.path.join(os.path.dirname(__file__), "..", "creatures", "bittle", "scene_mhflocke.xml")
 FLOG_MAGIC = b'FLOG'
-VERSION = 'v0.8.0'  # single source for the on-screen version (title card + dashboard)
+VERSION = 'v0.8.1'  # single source for the on-screen version (title card + dashboard)
 
 
 def write_frame(pipe, img):
@@ -287,12 +287,12 @@ def main():
     # Load dashboard overlay
     dash = None
     try:
-        from src.viz.go2_dashboard import Go2DashboardOverlay
+        from src.viz.bittle_dashboard import BittleDashboardOverlay
         # v0.4.3: Real population sizes from FLOG meta or defaults
         flog_pops = flog.meta.get('population_sizes', None)
         bittle_pops = flog_pops if flog_pops else {'n_input': 24, 'n_granule': 106, 'n_golgi': 18,
                          'n_purkinje': 24, 'n_dcn': 24, 'n_output': 8, 'n_total': 232}
-        dash = Go2DashboardOverlay(args.width, args.height, population_sizes=bittle_pops)
+        dash = BittleDashboardOverlay(args.width, args.height, population_sizes=bittle_pops)
         print(f'  Dashboard overlay: ON')
     except Exception as e:
         print(f'  Dashboard overlay: FAILED ({e})')

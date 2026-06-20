@@ -1,10 +1,13 @@
 """
-MH-FLOCKE — Go2 Dashboard v0.4.3
+MH-FLOCKE — Bittle Dashboard
 ========================================
 PIL-based dashboard overlay for video rendering.
+
+(Renamed from go2_dashboard.py / Go2DashboardOverlay — Go2-era legacy name —
+to the Bittle-only naming. go2_dashboard.py remains as a back-compat shim.)
 """
 
-__version__ = "0.4.3"
+__version__ = "0.5.0"
 __logbook__ = 152
 
 import gc
@@ -57,7 +60,7 @@ EMO_COLORS = {
 # ═══════════════════════════════════════════════════════════
 
 _FONTS = {}
-_FONT_SCALE = 1.0  # Set by Go2DashboardOverlay.__init__ based on resolution
+_FONT_SCALE = 1.0  # Set by BittleDashboardOverlay.__init__ based on resolution
 _MIN_FONT_PX = 14  # Minimum font size in pixels (survives YouTube compression)
 
 def _f(size, bold=False):
@@ -190,24 +193,23 @@ def _widget_cerebellum(w, h, s):
 
 
 def _widget_neuromod(w, h, s):
-    """Neuromodulator bars: DA, Serotonin (via emotion), Noradrenaline (via arousal)."""
+    """Neuromodulator bars: DA, Serotonin, Noradrenaline — REAL values only.
+
+    Every bar shows the real model value from the
+    FLOG (da_reward + serotonin/noradrenaline written by train_baby from
+    snn.neuromod_levels) or '—'. No derived, estimated, or fallback values.
+    """
     panel, d = _glass(w, h)
-    da = s.get('da_reward', 0.0)
-    # Derive neuromodulator levels from actual training signals
-    # Serotonin ~ stability/upright (calm = high 5-HT)
-    upright = s.get('upright', 0.5)
-    vel = s.get('vel_mps', 0.0)
-    serotonin = np.clip(upright * 0.6 + (1.0 - min(1, abs(da))) * 0.3 + 0.1, 0, 1)
-    # Noradrenaline ~ arousal/alertness (falls, reflex, error)
-    cf = s.get('cf_magnitude', 0.0)
-    reflex = s.get('reflex_magnitude', 0.0)
-    fallen = s.get('is_fallen', 0)
-    noradrenaline = np.clip(cf * 2.0 + reflex * 1.5 + fallen * 0.5 + vel * 0.2, 0, 1)
+    da = s.get('da_reward', None)
+    serotonin = s.get('serotonin', None)
+    noradrenaline = s.get('noradrenaline', None)
 
     d.text((12, 5), 'NEUROMODULATORS', fill=(*PINK, 240), font=_f(13, True))
 
+    # DA is [-1,1] → [0,1] for the bar; missing → None → '—'
+    da_disp = (da + 1.0) / 2.0 if da is not None else None
     mods = [
-        ('Dopamine', (da + 1.0) / 2.0, PINK),   # DA is [-1,1] → [0,1]
+        ('Dopamine', da_disp, PINK),
         ('Serotonin', serotonin, GREEN),
         ('Noradren.', noradrenaline, ORANGE),
     ]
@@ -218,10 +220,14 @@ def _widget_neuromod(w, h, s):
         d.text((12, y), label, fill=(*GREY, 210), font=_f(12))
         by = y + 2
         d.rounded_rectangle([(bar_x, by), (bar_x + bw, by + 12)], radius=3, fill=(*BAR_BG, 180))
-        fw = max(0, min(bw, int(bw * max(0, min(1, val)))))
-        if fw > 2:
-            d.rounded_rectangle([(bar_x, by), (bar_x + fw, by + 12)], radius=3, fill=(*color, 220))
-        d.text((bar_x + bw + 4, y), f'{val:.2f}', fill=(*color, 210), font=_f(12))
+        if val is None:
+            # No real value → '—', never a fabricated bar.
+            d.text((bar_x + bw + 4, y), '\u2014', fill=(*GREY, 180), font=_f(12))
+        else:
+            fw = max(0, min(bw, int(bw * max(0, min(1, val)))))
+            if fw > 2:
+                d.rounded_rectangle([(bar_x, by), (bar_x + fw, by + 12)], radius=3, fill=(*color, 220))
+            d.text((bar_x + bw + 4, y), f'{val:.2f}', fill=(*color, 210), font=_f(12))
         y += 26
     return panel
 
@@ -355,30 +361,13 @@ def _widget_behavior_emotion(w, h, s):
     # Emotion + Drive (right half)
     mid = w // 2 + 20
     d.text((mid, row0), 'EMOTION', fill=(*VIOLET, 240), font=_f(14, True))
-    # Derive emotion from signals when label is neutral/empty
-    # (embodied_emotions.py thresholds are too narrow, always returns neutral)
-    if not emo or emo == 'neutral':
-        da_val = s.get('da_reward', 0.0)
-        vel_val = s.get('vel_mps', 0.0)
-        fallen_val = s.get('is_fallen', 0)
-        cf_val = s.get('cf_magnitude', 0.0)
-        if fallen_val:
-            emo = 'fearful'
-        elif da_val > 0.1 and vel_val > 0.05:
-            emo = 'excited'
-        elif da_val > 0.05 and vel_val < 0.02:
-            emo = 'content'
-        elif cf_val > 0.1:
-            emo = 'tense'
-        elif vel_val > 0.1:
-            emo = 'focused'
-        else:
-            emo = 'calm'
-    ec = EMO_COLORS.get(emo, GREY)
-    emo_nice = {'excited': 'EXCITED', 'content': 'CONTENT', 'fearful': 'FEARFUL',
-                'sad': 'SAD', 'calm': 'CALM', 'tense': 'TENSE',
-                'focused': 'FOCUSED', 'neutral': 'NEUTRAL'}
-    label = emo_nice.get(emo, emo.upper())
+    # Real dominant emotion only — no derived/estimated emotion.
+    if emo:
+        ec = EMO_COLORS.get(emo, GREY)
+        label = emo.upper()
+    else:
+        ec = GREY
+        label = '\u2014'
     d.text((mid, row1), label, fill=(*ec, 255), font=_f(18, True))
 
     # Drive (right half)
@@ -593,25 +582,15 @@ def _widget_sensory(w, h, s):
 
 
 def _widget_valence_arousal(w, h, s):
-    """Valence/Arousal 2D compass — derived from multiple signals."""
+    """Valence/Arousal 2D compass — REAL values only.
+
+    Reads valence/arousal straight from the FLOG (written from the emotion
+    system). If a value is missing the dot is not drawn and '—' is shown;
+    no derived estimate is ever displayed.
+    """
     panel, d = _glass(w, h)
-    # Try direct values first (if logged), otherwise derive from signals
     valence = s.get('valence', None)
     arousal = s.get('arousal', None)
-
-    if valence is None:
-        # Derive valence from: DA reward (+), falls (-), distance (+)
-        da = s.get('da_reward', 0.0)
-        fallen = s.get('is_fallen', 0)
-        vel = s.get('vel_mps', 0.0)
-        valence = np.clip(da * 0.5 + vel * 0.3 - fallen * 0.8, -1, 1)
-
-    if arousal is None:
-        # Derive arousal from: velocity, reflex activity, CF error
-        vel = s.get('vel_mps', 0.0)
-        cf = s.get('cf_magnitude', 0.0)
-        reflex = s.get('reflex_magnitude', 0.0)
-        arousal = np.clip(vel * 0.4 + cf * 2.0 + reflex * 1.5 + 0.1, 0, 1)
 
     d.text((10, 6), 'VALENCE / AROUSAL', fill=(*VIOLET, 240), font=_f(12, True))
 
@@ -621,18 +600,19 @@ def _widget_valence_arousal(w, h, s):
     d.line([(cx - r, cy), (cx + r, cy)], fill=(*GREY, 60), width=1)
     d.line([(cx, cy - r), (cx, cy + r)], fill=(*GREY, 60), width=1)
 
-    # Dot position
-    dx = cx + int(r * 0.85 * valence)
-    dy = cy - int(r * 0.85 * arousal)
-    if valence > 0 and arousal > 0.3:
-        dot_c = GREEN
-    elif valence > 0:
-        dot_c = CYAN
-    elif arousal > 0.5:
-        dot_c = RED
-    else:
-        dot_c = GREY
-    d.ellipse([(dx - 4, dy - 4), (dx + 4, dy + 4)], fill=(*dot_c, 240))
+    # Dot only when BOTH real values exist — never a fabricated position.
+    if valence is not None and arousal is not None:
+        dx = cx + int(r * 0.85 * valence)
+        dy = cy - int(r * 0.85 * arousal)
+        if valence > 0 and arousal > 0.3:
+            dot_c = GREEN
+        elif valence > 0:
+            dot_c = CYAN
+        elif arousal > 0.5:
+            dot_c = RED
+        else:
+            dot_c = GREY
+        d.ellipse([(dx - 4, dy - 4), (dx + 4, dy + 4)], fill=(*dot_c, 240))
 
     # Labels
     d.text((cx + r + 3, cy - 6), '+V', fill=(*GREEN, 150), font=_f(9))
@@ -640,8 +620,10 @@ def _widget_valence_arousal(w, h, s):
     d.text((cx - 4, cy - r - 12), '+A', fill=(*ORANGE, 150), font=_f(9))
 
     # Values
-    d.text((10, h - 22), f'V:{valence:+.2f}', fill=(*ICE, 200), font=_f(11))
-    d.text((w // 2, h - 22), f'A:{arousal:.2f}', fill=(*ICE, 200), font=_f(11))
+    v_txt = f'{valence:+.2f}' if valence is not None else '\u2014'
+    a_txt = f'{arousal:.2f}' if arousal is not None else '\u2014'
+    d.text((10, h - 22), f'V:{v_txt}', fill=(*ICE, 200), font=_f(11))
+    d.text((w // 2, h - 22), f'A:{a_txt}', fill=(*ICE, 200), font=_f(11))
     return panel
 
 
@@ -913,7 +895,7 @@ def _draw_steering_arrow(canvas, stats, cam_params):
 # MAIN OVERLAY CLASS
 # ═══════════════════════════════════════════════════════════
 
-class Go2DashboardOverlay:
+class BittleDashboardOverlay:
     """
     L-shaped glass overlay with Brain 3D flagship.
     Memory-safe: all PIL images explicitly closed after use.
@@ -1020,16 +1002,19 @@ class Go2DashboardOverlay:
         # Brain 3D Network (FLAGSHIP — large!)
         if self._brain3d_fn:
             try:
-                snn_mix = stats.get('snn_mix', 0.1)
-                activity = max(0.03, min(0.15, snn_mix * 0.2))
-                # v0.4.2: Use real spike data from FLOG if available
-                spikes_data = stats.get('spikes', None)
+                # Use the real spike raster from the FLOG if available.
+                # 'spike_raster' (full, unsampled) is preferred; 'spikes' is the
+                # legacy key (record_training down-samples it to 200).
+                spikes_data = stats.get('spike_raster', stats.get('spikes', None))
                 if spikes_data is not None:
                     spike_raster = np.array(spikes_data, dtype=float)
                 else:
-                    # Fallback: generate from firing rate (legacy FLOGs without spike data)
+                    # No real spike raster in this FLOG → show no activity rather
+                    # than fabricating one.
+                    # TODO: log the real sampled spike raster into the FLOG training
+                    # frame so the Brain3D shows genuine activity.
                     n_viz = self._brain3d_state.n_display if self._brain3d_state else 350
-                    spike_raster = np.random.binomial(1, activity, n_viz).astype(float)
+                    spike_raster = np.zeros(n_viz, dtype=float)
 
                 brain_img, self._brain3d_state = self._brain3d_fn(
                     spike_raster,
@@ -1110,3 +1095,8 @@ class Go2DashboardOverlay:
             gc.collect()
 
         return result
+
+
+# Backward-compat alias — this overlay was called Go2DashboardOverlay in the
+# Go2 era. Prefer BittleDashboardOverlay; the old name keeps working.
+Go2DashboardOverlay = BittleDashboardOverlay

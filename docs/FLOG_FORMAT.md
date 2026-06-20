@@ -1,9 +1,14 @@
 # FLOG Binary Format — Structure Documentation
 
-**MH-FLOCKE Level 15 v0.5.x**
-**Document Version:** 1.2 — May 2, 2026
+**MH-FLOCKE Level 15 v0.8.1**
+**Document Version:** 1.3 — June 20, 2026
 
 Changelog:
+- 1.3 (June 2026, v0.8.1): Binary header version (LOG_VERSION) bumped 1 → 2.
+  FRAME_TRAINING may carry real per-neuron `spike_raster` and real neuromodulators
+  (`serotonin` / `noradrenaline` / `acetylcholine`) from `snn.neuromod_levels`,
+  replacing the placeholder overlay values used through v0.8.0. Backward compatible:
+  older v1 logs read normally; a missing field renders as `—`, never a fabricated value.
 - 1.2 (May 2026): Phototaxis navigation fields added to FRAME_CREATURE
   (`dist_to_light`, `intent_yaw_rate`) and FRAME_TRAINING (`pos_x/y`,
   `dist_to_light`, `heading_to_light`, `intent_yaw_rate`, `brain_pos_x/y`,
@@ -19,7 +24,7 @@ Changelog:
 ┌─────────────────────────────────────────────────┐
 │  HEADER                                          │
 │  ├── Magic:     4 bytes  "FLOG" (0x464C4F47)    │
-│  ├── Version:   uint16 LE (currently 1)          │
+│  ├── Version:   uint16 LE (2 since v0.8.1)       │
 │  ├── Phase:     uint8 (0 = training)             │
 │  ├── Meta Len:  uint32 LE (JSON metadata size)   │
 │  └── Meta JSON: variable (UTF-8 JSON string)     │
@@ -37,7 +42,7 @@ Changelog:
 | Field     | Type      | Bytes | Description                           |
 |-----------|-----------|-------|---------------------------------------|
 | magic     | char[4]   | 4     | Always `FLOG` (0x464C4F47)           |
-| version   | uint16 LE | 2     | Format version (currently 1)          |
+| version   | uint16 LE | 2     | Format version (1 through v0.5.x, 2 from v0.8.1) |
 | phase     | uint8     | 1     | Training phase (0 = standard)         |
 | meta_len  | uint32 LE | 4     | Length of JSON metadata in bytes      |
 | meta_json | UTF-8     | var   | JSON metadata (see §2)                |
@@ -138,6 +143,7 @@ Recorded every 1000 steps. Contains all brain/body metrics.
 | c_level            | int    | Consciousness level (0-15)                 |
 | pci                | float  | Perturbational Complexity Index            |
 | spike_count        | int    | SNN spike count this interval              |
+| spike_raster       | [int]  | Per-neuron binary spikes (v0.8.1, LOG_VERSION 2). Length = total neuron count; population order input→granule→golgi→purkinje→dcn→motor_hidden→output. Absent in older logs (overlay shows `—`) |
 | phase              | string | Dev phase (e.g. "level15")                 |
 | actor_competence   | float  | Actor competence (0-1, drives CPG blend)   |
 | cpg_weight         | float  | CPG weight (1.0 = pure CPG, 0.4 = SNN mix)|
@@ -153,6 +159,9 @@ Recorded every 1000 steps. Contains all brain/body metrics.
 | arousal            | float  | Arousal level (0-1)                        |
 | drive_dominant     | string | Dominant drive (exploration, play, etc.)   |
 | curiosity_reward   | float  | Curiosity-driven reward                    |
+| serotonin          | float  | Real serotonin (5-HT) level from `snn.neuromod_levels` (v0.8.1); absent in older logs |
+| noradrenaline      | float  | Real noradrenaline (NE) level (v0.8.1); absent in older logs |
+| acetylcholine      | float  | Real acetylcholine (ACh) level (v0.8.1); absent in older logs |
 
 **Cerebellum:**
 

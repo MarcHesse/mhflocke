@@ -2,6 +2,20 @@
 
 All notable changes to MH-FLOCKE. Dates are YYYY-MM-DD.
 
+## v0.8.1 — Real data in the video dashboard overlay (2026-06-20)
+
+A few readouts in the rendered dashboard overlay were still placeholders, shown for
+demonstration. As of v0.8.1 they are all wired through to the real values from the training
+log — no placeholder values remain in the overlay. A reading that genuinely isn't available in a
+run is shown as `—` rather than a stand-in.
+
+- **New:** `scripts/check_flog.py` — a post-run check that a training log is well-formed and
+  carries real values.
+- Training-log format bumped, backward compatible (older logs still read fine).
+- `src/viz/go2_dashboard.py` → `src/viz/bittle_dashboard.py`; package version → `0.8.1`.
+
+---
+
 ## v0.8.0 — Bittle-only Public Release (2026-06-18)
 
 The public `main` branch is now scoped to the Petoi Bittle X. The earlier Go2 and Freenove

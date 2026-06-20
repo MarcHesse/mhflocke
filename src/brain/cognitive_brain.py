@@ -22,7 +22,7 @@ v0.4.2: Baby-KI support (2026-04-21).
 v0.4.1: original 15-step architecture.
 """
 
-__version__ = "0.4.6"
+__version__ = "0.4.7"
 __logbook__ = 122
 
 import torch
@@ -926,6 +926,11 @@ class CognitiveBrain:
             'astrocyte_active': self.astrocytes.above_threshold_count,
             'pci': self._last_pci,
             'dreamed': dream_result is not None,
+            # Expose neuromodulator levels on the per-step process() return so the
+            # training loop can log the real 5-HT/NE/ACh to FLOG. get_state()
+            # already exposed them, but the loop reads process()'s return
+            # (brain_result), which previously omitted neuromod.
+            'neuromod': dict(self.snn.neuromod_levels),
             # v0.4.2: Baby-KI state
             'vestibular_discomfort': self._vestibular_discomfort,
             'body_anomaly_ema': self._body_anomaly_ema,

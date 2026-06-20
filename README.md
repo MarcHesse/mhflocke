@@ -13,7 +13,7 @@ pattern generator, embodied emotions, and reward-modulated spike-timing-dependen
 SNN + cerebellum learn to refine it on top — closer to how a young animal's brainstem and
 spinal cord come pre-wired while the cerebellum and cortex calibrate them with experience.
 
-> **This `main` branch is the Bittle-only public release (v0.8.0).** The active hardware
+> **This `main` branch is the Bittle-only public release (v0.8.1).** The active hardware
 > platform is the [Petoi Bittle X](https://www.petoi.com/products/petoi-bittle-x). Earlier
 > platforms (Unitree Go2 ablation, Freenove sim-to-real) are preserved as paper checkpoints —
 > see the tags below.
@@ -204,6 +204,12 @@ python scripts/sonify_flog.py --flog creatures/bittle/<run>/training_log.bin --s
 
 The Brain3D visualization in rendered videos shows actual SNN topology and spike activity from
 the training data.
+
+> **v0.8.1 — real overlay data.** A few readouts in the rendered dashboard overlay were still
+> placeholders, shown for demonstration. As of v0.8.1 they are all wired through to the real
+> values from the training log; a reading that isn't available in a given run is shown as `—`
+> rather than a stand-in. You can verify a log carries real values with
+> `python scripts/check_flog.py <run>/training_log.bin`.
 
 ## Project Structure
 

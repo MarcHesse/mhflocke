@@ -19,8 +19,8 @@ Audio layers (mixed together):
 Output: WAV file matching video duration, then mux with FFmpeg.
 
 Usage:
-    py -3.11 scripts/sonify_flog.py --flog creatures/go2/v034_.../training_log.bin --speed 2
-    py -3.11 scripts/sonify_flog.py --flog ... --speed 2 --mux go2_mujoco_dash.mp4
+    py -3.11 scripts/sonify_flog.py --flog creatures/bittle/v043_.../training_log.bin --speed 3
+    py -3.11 scripts/sonify_flog.py --flog ... --speed 3 --mux bittle_render.mp4
 
 Dependencies:
     pip install numpy soundfile
@@ -387,7 +387,7 @@ class FLOGSonifier:
 
             # 9. Ball Proximity Ping — rising tone when approaching ball (Issue #76d)
             # Biology: Auditory representation of visual salience.
-            # Pitch rises as Go2 gets closer, panning follows ball direction.
+            # Pitch rises as the robot gets closer, panning follows ball direction.
             ball_dist = s.get('ball_dist', -1.0)
             ball_heading = s.get('ball_heading', 0.0)
             ball_approach = s.get('ball_approach_reward', 0.0)
@@ -557,7 +557,7 @@ def main():
         print(f'  pedalboard error: {e} — using raw mix')
 
     if args.output is None:
-        args.output = os.path.join(os.path.dirname(args.flog), 'go2_sonification.wav')
+        args.output = os.path.join(os.path.dirname(args.flog), 'bittle_sonification.wav')
     sonifier.save(args.output)
 
     if args.mux:

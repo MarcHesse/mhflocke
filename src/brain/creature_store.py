@@ -4,7 +4,7 @@ MH-FLOCKE — Creature Store v0.4.1
 FLOG binary logger for training data.
 """
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 __logbook__ = 112
 
 import json
@@ -80,7 +80,12 @@ class CreatureManifest:
 
 # Binary format constants
 LOG_MAGIC = b'FLOG'
-LOG_VERSION = 1
+# Schema version. v2 (2026-06-20): TRAINING frames may carry real
+# neuromodulator levels (serotonin/noradrenaline/acetylcholine) sourced from
+# snn.neuromod_levels via cognitive_brain. Backward compatible: frames are open
+# msgpack dicts, so v1 readers ignore the new keys and v1 files simply lack them
+# (the video overlay then shows its derived fallback instead of the real value).
+LOG_VERSION = 2
 FRAME_EVOLUTION = 0x01
 FRAME_TRAINING = 0x02
 FRAME_EVENT = 0x03
