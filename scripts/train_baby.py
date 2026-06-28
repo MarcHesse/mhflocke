@@ -1166,6 +1166,7 @@ def main():
         print(f'  LightMemory: enabled (gain=0.4, timeout=10s)')
 
     start_step = 0
+    _resume_spatial_map = None   # spatial_map is built later (~L1431); stash + apply after creation
     if args.resume and os.path.exists(args.resume):
         print(f'\n  Resuming from {args.resume}...')
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
@@ -1181,9 +1182,10 @@ def main():
             print(f'  ⚠ SNN state not found, starting fresh weights')
         if cb and 'cerebellum_state' in ckpt:
             cb.load_state_dict(ckpt['cerebellum_state'])
-        # v4.2: Restore spatial map
+        # v4.2: Restore spatial map — DEFERRED: the spatial_map object is built
+        # later (~L1431). Stash the state now, load it right after creation.
         if 'spatial_map' in ckpt:
-            spatial_map.load_state_dict(ckpt['spatial_map'])
+            _resume_spatial_map = ckpt['spatial_map']
         start_step = ckpt.get('step', 0)
         gate.actor_competence = ckpt.get('actor_competence', 0.0)
         gate.cpg_weight = ckpt.get('cpg_weight', gate.cpg_max)
@@ -1430,6 +1432,9 @@ def main():
     # --- Spatial Map (v0.7.0 Pillar 2) ---
     spatial_map = SpatialMap(world_size=10.0, grid_resolution=20)
     print(f'  Spatial Map: {SPATIAL_MAP_VERSION} (path integration, {spatial_map.grid_resolution}x{spatial_map.grid_resolution} grid)')
+    if _resume_spatial_map is not None:
+        spatial_map.load_state_dict(_resume_spatial_map)
+        print(f'  Spatial map restored from checkpoint')
 
     # --- Directed Learning (v0.7.0 Pillar 5) ---
     directed_learning = DirectedLearning(
