@@ -14,7 +14,9 @@ well-formed AND that the values in it are real, not placeholder/derived:
   * real neuromodulators (serotonin/noradrenaline/acetylcholine) are present
     and in range — not derived/placeholder
   * no NaN in any numeric stats field (Inf is treated as a sentinel -> WARN)
-  * per-population spike coverage is sane (when population_sizes is in meta)
+  * per-population spike coverage over the whole run (when population_sizes is
+    in meta): how many neurons in each population fired at least once. A
+    population that stays silent for an entire run is a WARN, not a PASS.
 
 Plus an informational run summary (steps / falls / distance / competence).
 
@@ -29,7 +31,7 @@ Usage:
     py -3.11 scripts/check_flog.py --json
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __logbook__ = 201
 
 import argparse
@@ -284,23 +286,44 @@ def check_spike_raster(rep, meta, train):
                 f"real raster '{key}', length {length}, binary"
                 + (f", matches population total {total}" if total else ""))
 
-    # per-population coverage (sanity: not impossible, raster not all-zero)
+    # Per-population coverage. Counted over ALL training frames, not just the
+    # first one: a single frame says nothing about a population -- at a target
+    # rate of 0.05 most neurons are silent in any given step, so a first-frame
+    # count of 0/278 is normal and reads as if the population never fires.
+    # What matters is whether a neuron fired AT LEAST ONCE across the run.
     if seg and length == total:
+        ever = [False] * total
+        n_used = 0
+        for d in train:
+            r = d.get("spike_raster")
+            if r is None or len(r) != total:
+                continue
+            n_used += 1
+            for i, x in enumerate(r):
+                if x:
+                    ever[i] = True
+
         off = 0
         cov = []
-        nonzero_pops = 0
+        silent_pops = []
         for name, n in seg:
             if n <= 0:
                 continue
-            s = sum(int(x) > 0 for x in sample[off:off + n])
+            s = sum(ever[off:off + n])
             off += n
             cov.append(f"{name}:{s}/{n}")
-            if s > 0:
-                nonzero_pops += 1
-        if nonzero_pops == 0:
-            rep.add(WARN, "spike_coverage", "raster is all-zero in this frame (no neuron fired)")
+            if s == 0:
+                silent_pops.append(name)
+
+        detail = "  ".join(cov) + f"  (fired at least once over {n_used} frames)"
+        if not any(ever):
+            rep.add(FAIL, "spike_coverage",
+                    "no neuron fired in the entire run -- the raster is all zero")
+        elif silent_pops:
+            rep.add(WARN, "spike_coverage",
+                    detail + "  |  SILENT ALL RUN: " + ", ".join(silent_pops))
         else:
-            rep.add(PASS, "spike_coverage", "  ".join(cov))
+            rep.add(PASS, "spike_coverage", detail)
 
 
 def check_nan(rep, train):

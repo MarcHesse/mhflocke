@@ -55,7 +55,7 @@ Usage:
 Author: MH-FLOCKE Level 15 v0.4.3
 """
 
-__version__ = "0.8.1"     # module version (MAJOR.MINOR); Baby-KI trainer
+__version__ = "0.8.3"     # module version (MAJOR.MINOR); Baby-KI trainer
 __logbook__ = 63          # mh-logbuch module entry
 __status__  = "active"     # active | veraltet | neu
 
@@ -523,9 +523,122 @@ def main():
     parser.add_argument('--steps', type=int, default=200000)
     parser.add_argument('--xml', type=str, default='creatures/dm_quadruped/creature.xml')
     parser.add_argument('--log-every', type=int, default=1000)
+    parser.add_argument('--record-interval', type=int, default=10,
+                        help='Cadence (steps) for logging the body POSE (qpos/qvel) used for MuJoCo '
+                             'replay in render_bittle. Default 10 (~20 Hz, bit-identical). Set 1 for '
+                             'smooth render-quality playback (denser FLOG; dynamics unchanged).')
+    parser.add_argument('--coord-reward-weight', type=float, default=0.0,
+                        help='Increment b (#208): weight of buffered IMU gait-band coordination '
+                             'reward (acc_x+pitch concentration over ~2000-step rolling buffer). '
+                             '0.0 = OFF (bit-identical baseline).')
+    parser.add_argument('--block-aversion-weight', type=float, default=0.0,
+                        help='#213/#206: weight of the INTRINSIC block-aversion term — a persistent '
+                             'yaw-scrub (rolling yaw_rate std) added to vestibular_discomfort so that '
+                             'being stuck against a wall becomes intrinsically aversive. NOT external '
+                             'reward and NOT a hardcoded turn: it only makes the blocked state '
+                             'unpleasant; the existing R-STDP/drive machinery must LEARN that turning '
+                             'reduces it. 0.0 = OFF (bit-identical baseline).')
+    parser.add_argument('--block-aversion-window', type=int, default=200,
+                        help='Rolling window (steps) for the yaw-scrub block signal (default 200).')
+    parser.add_argument('--imu-obstacle', action='store_true',
+                        help='Blind-IMU obstacle avoidance via Run-and-Tumble (#108 RT): the IMU '
+                             'block signal drives a discrete RUN (straight, full gait = kwkF) -> '
+                             'SNIFF (evaluate block_aversion) -> TUMBLE (committed turn at full gait '
+                             '= kwkL) cycle, mirroring the chemotaxis state machine. Replaces the '
+                             'continuous throttle+bias reflex that traps the robot in slow-turn '
+                             'limbo. No external reward (intrinsic). Default OFF (bit-identical).')
+    parser.add_argument('--imu-ob-run', type=int, default=60,
+                        help='Run-and-Tumble: straight RUN length (steps) between block evaluations (default 60).')
+    parser.add_argument('--imu-ob-tumble', type=int, default=40,
+                        help='Run-and-Tumble: committed TUMBLE (turn) length in steps (default 40).')
+    parser.add_argument('--imu-ob-turn-gain', type=float, default=1.0,
+                        help='Run-and-Tumble: committed turn steering magnitude during TUMBLE (kwkL strength, default 1.0).')
+    parser.add_argument('--imu-ob-block-on', type=float, default=0.45,
+                        help='Run-and-Tumble: block_aversion at a SNIFF above which the robot tumbles (default 0.45).')
+    parser.add_argument('--wall-memory-weight', type=float, default=0.0,
+                        help='Task #84 step 2: weight of the anticipatory boundary-aversion term '
+                             'added to block_aversion when near a remembered DANGER landmark (the '
+                             'wall, anchored once at first contact in step 1). Reuses the existing '
+                             'aversion+Run-and-Tumble machinery: in the canonical run (--imu-obstacle) '
+                             'it makes the existing tumble fire EARLIER (anticipatory turn-away); with '
+                             '--block-aversion-weight>0 it ALSO feeds the intrinsic learn signal. '
+                             '0.0 = OFF (bit-identical). SCAFFOLD: the landmark geometry is read from '
+                             'the dead-reckoned map (privileged vel_mps/cur_x); HW-honest IMU odometry '
+                             'is the named follow-up.')
+    parser.add_argument('--wall-memory-radius', type=float, default=0.25,
+                        help='Task #84 step 2: anticipation radius (m) for the remembered-danger term; '
+                             'aversion ramps from 0 at this distance to max at the landmark.')
+    parser.add_argument('--danger-steer-weight', type=float, default=0.0,
+                        help='Task #84 step 4: the missing ACTOR. Steps 1-3 all produce a SIGNAL '
+                             '(block_aversion, wall_mem, curiosity) but the only thing that ever turns '
+                             'the body is the Run-and-Tumble SNIFF -- a discrete check every ~40 steps. '
+                             'Between SNIFFs the remembered wall has no path to the motor at all. This '
+                             'term adds a quiet, CONTINUOUS away-from-danger steering bias straight into '
+                             '_cpg_steering whenever a remembered DANGER landmark sits ahead and close. '
+                             'It is neither reward nor curiosity -- it is a drive, and it acts every step. '
+                             'Magnitude is constant (this weight), shaped only by proximity x aheadness. '
+                             'Applied BEFORE the efference-copy buffer, so the yaw it generates is '
+                             'subtracted out of block_aversion and cannot be mistaken for wall scrub. '
+                             '0.0 = OFF (bit-identical). Suggested first probe: 0.15-0.30.')
+    parser.add_argument('--danger-steer-radius', type=float, default=0.35,
+                        help='Task #84 step 4: radius (m) within which the away-from-danger drive acts. '
+                             'Slightly wider than --wall-memory-radius by default, so the body starts '
+                             'drifting away before the aversion signal itself peaks.')
+    parser.add_argument('--steering-mode', choices=('offset', 'gait_blend'), default='offset',
+                        help='Task #92: HOW a steering command turns the body (OpenCat creatures only). '
+                             "'offset' (default) is the legacy path: a static bias on the shoulder joints. "
+                             'Measured in isolation (knowledge #271): ~4 deg/s of steering span at full '
+                             'lock, against a gait that drifts 2.84 deg/s on its own with no command. The '
+                             'command is smaller than the drift it has to fight -- effectively inert. The '
+                             'reason is structural: a trot turns by taking LONGER STRIDES on the outside '
+                             'of the curve, and an offset to the rest pose leaves stride length symmetric. '
+                             "'gait_blend' blends the whole stride toward OpenCat's own turning table "
+                             '(trF -> trL, mirrored for right turns). Measured: 13.6 deg/s of span, 3.4x '
+                             'the legacy path, and bit-identical to it at zero steering. Those tables come '
+                             'from the OpenCat firmware, so this also works on the real Bittle. '
+                             'Every recorded run predating task #92 used offset, which is why it stays '
+                             'the default -- but no wall-avoidance mechanism can work with it.')
+    parser.add_argument('--steering-constant', type=float, default=0.0,
+                        help='Task #92/#94 DIAGNOSTIC: inject a constant steering command into '
+                             '_cpg_steering every step (added AFTER all reflex/danger terms), so the '
+                             'isolated turn test has a stimulus with no wall present. +left / -right, '
+                             'magnitude ~0..1 (clamped by the controller). 0.0 = OFF (bit-identical). '
+                             'This is a measurement scaffold, NOT a control mechanism -- it lets '
+                             'analyze_turn_test.py measure the real deg/s that gait_blend produces.')
+    parser.add_argument('--steer-undamped', type=float, default=0.0,
+                        help='Task #92/#94 FIX: re-apply the pure turning component of gait_blend '
+                             'UNDAMPED in apply_motor_output, so the steer survives the '
+                             'cpg_weight*pd_scale damping that shrinks a 7.41 deg/s turn to ~1. '
+                             'The forward gait stays damped (stability); only the turn-only delta '
+                             'is added back at this weight. Needs --steering-mode gait_blend. '
+                             '0.0 = OFF (bit-identical). First probe ~0.6 (fills the missing 60%%); '
+                             'tune with analyze_turn_test.py. Joint deltas only -> HW-portable.')
+    parser.add_argument('--curiosity-steer-weight', type=float, default=0.0,
+                        help='Task #96 Weg 2: intrinsic curiosity steering. Every step, the SpatialMap '
+                             'says which way the least-visited (unexplored) space lies '
+                             '(direction_to_unexplored); this term steers the body that way, scaled by '
+                             'the CuriosityExplorer drive (bored/high-PE = turn more) and by how '
+                             'one-sided the novelty is. NOT external reward and NOT a hardcoded turn: '
+                             'the robot turns toward where the world is still unknown. Wall avoidance '
+                             'falls out for free -- behind a wall there is nothing new, so the vector '
+                             'points away. Added into _cpg_steering; use with --steer-undamped so it '
+                             'actually turns the body. 0.0 = OFF (bit-identical). First probe ~0.3-0.5.')
+    parser.add_argument('--curiosity-steer-radius', type=float, default=2.0,
+                        help='Task #96: radius (m) the unexplored-direction scan covers (default 2.0).')
+    parser.add_argument('--wall-distance', type=float, default=0.0,
+                        help='Override wall X distance in meters when scene contains a wall '
+                             '(0.0 = use scene default 0.8/1.5/3.0). Used for the stuck/wall test.')
+    parser.add_argument('--no-wall-reset', dest='no_wall_reset', action='store_true',
+                        help='Do not teleport-reset on wall contact (Issue #103) — robot stays '
+                             'blocked against the wall. For continuous learning / the wall test.')
     parser.add_argument('--timestep', type=float, default=0.005)
     parser.add_argument('--snn-substeps', type=int, default=3)
     parser.add_argument('--no-flog', action='store_true')
+    parser.add_argument('--dashboard', action='store_true',
+        help='Live dashboard: push the real flog_data dict to the ws://localhost:5001 '
+             'broadcaster (dashboard_views #61) for src/viz/sim_live.html. Default OFF = '
+             'bit-identical. Live cadence follows --log-every (use 1 for a smooth view); '
+             'needs FLOG on and `pip install websockets`. Pure observability, no SNN change.')
     parser.add_argument('--no-cerebellum', action='store_true')
     parser.add_argument('--no-terrain', action='store_true')
     parser.add_argument('--no-llm', action='store_true')
@@ -580,6 +693,10 @@ def main():
     parser.add_argument('--leg-damage', type=str, default='',
                         choices=['', 'FL', 'FR', 'RL', 'RR'],
                         help='Disable one leg (zero its actuators). Biology: leg injury.')
+    parser.add_argument('--pin-base-at', type=int, default=-1,
+                        help='DIAGNOSTIC: from this step, viscously lock the base x/y '
+                             'translation (true "wedged" stuck; legs keep gaiting). '
+                             '-1 = off. Observation-only test for accel stuck detection.')
     parser.add_argument('--leg-damage-at', type=int, default=0,
                         help='Step at which leg damage occurs (0=from start). '
                              'Biology: injury during locomotion. The creature must '
@@ -588,6 +705,67 @@ def main():
                         help='Baby-KI reward blend: 0.0 = pure intrinsic (default), '
                              '1.0 = pure external (v0.4.3 behavior). '
                              '0.1 = 10%% external + 90%% intrinsic (Stufe 1).')
+    parser.add_argument('--snn-motor-scale', type=float, default=None,
+                        help='How strongly the SNN overlays the CPG pattern on the '
+                             'motors (creature.motor_scale). Default None = 0.3 '
+                             '(unchanged => bit-identical). This is the LAST untested '
+                             'link in the learning chain (26.07.2026): substrate, '
+                             'reward, modulator and eligibility were all measured and '
+                             'repaired without any behavioural change, so the open '
+                             'question is whether the SNN reaches the motors at all. '
+                             'Raising this is a direct test; 0.0 disables the SNN '
+                             'overlay entirely (control: does behaviour change AT ALL?).')
+    parser.add_argument('--eligibility-decay', type=float, default=None,
+                        help='Own decay for the ELIGIBILITY trace, per SNN step. '
+                             'Default None = same as the STDP trace (0.95) => '
+                             'bit-identical. Finding 26.07.2026: one constant served '
+                             'two biologically distinct roles -- the coincidence '
+                             'window (~20 ms) and the reward-waiting window (0.3-2 s, '
+                             'Yagishita 2014). At 0.95 with --snn-substeps 10 the '
+                             'half-life is ~1.35 control steps, so delayed reward is '
+                             'structurally unlearnable. 0.999 gives ~693 SNN steps.')
+    parser.add_argument('--eligibility-consume', type=float, default=None,
+                        help='Factor the eligibility is multiplied by after each '
+                             'apply_rstdp (default 0.3). 1.0 = reward does not consume '
+                             'the trace. Default None = unchanged => bit-identical.')
+    parser.add_argument('--pe-blend', type=float, default=None,
+                        help='Weight of the prediction error in the R-STDP learning '
+                             'signal: combined = (1-w)*R + w*(-PE). Default None = '
+                             'config value 0.9 (unchanged => bit-identical). Measured '
+                             '26.07.2026: the PE branch fires 98.7%% of calls and '
+                             'contributes 70.8%% of the signal magnitude, so the '
+                             'intrinsic drives (curiosity, empowerment, vestibular, '
+                             'proprioception) barely shape learning. Lower w gives them '
+                             'more weight; w=0 learns from R alone.')
+    parser.add_argument('--reward-baseline', action='store_true',
+                        help='Schultz 1997: modulate R-STDP with the DEVIATION from '
+                             'expected reward instead of the raw value. Measured '
+                             '25.07.2026: R has mean +0.68 (min -0.16), so the raw '
+                             'modulator is positive >90%% of the time and dw is almost '
+                             'always positive -- every active synapse is strengthened '
+                             'regardless of its contribution, i.e. reward-modulated '
+                             'learning degenerates into plain Hebbian potentiation. '
+                             'Subtracting a running expectation makes the modulator '
+                             'zero-mean: better than expected strengthens, worse '
+                             'weakens. Default OFF => bit-identical.')
+    parser.add_argument('--reward-baseline-alpha', type=float, default=0.01,
+                        help='EMA rate for the reward expectation (default 0.01, i.e. '
+                             'time constant ~100 R-STDP calls). Only used with '
+                             '--reward-baseline.')
+    parser.add_argument('--empowerment-weight', type=float, default=None,
+                        help="Override CognitiveBrain empowerment_weight_intrinsic (the "
+                             "weight of empowerment in the intrinsic-reward sum). Default "
+                             "None = config value (unchanged => bit-identical). Set 0 to "
+                             "drop empowerment from R for the A/B (#230). Changes r when "
+                             "set => behaviour A/B, not a bit-identical regression.")
+    parser.add_argument('--curiosity-learning-progress', action='store_true',
+                        help='Lever C (Task #84): switch the CuriosityDrive from rewarding raw '
+                             'prediction-error surprise to rewarding learning PROGRESS (error '
+                             'decreasing). Unlearnable chaos (a wall the world-model cannot '
+                             'predict) stops being rewarded -> stops being a magnet. Default off '
+                             '=> bit-identical. Changes behaviour when set => A/B, not a regression.')
+    parser.add_argument('--curiosity-lp-scale', type=float, default=1.0,
+                        help='Lever C: scale of the learning-progress reward (default 1.0).')
     args = parser.parse_args()
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -684,6 +862,9 @@ def main():
         _wall_distance = 1.5
     elif 'very far' in args.scene.lower():
         _wall_distance = 3.0
+    if getattr(args, 'wall_distance', 0.0) and args.wall_distance > 0.0:
+        _wall_distance = float(args.wall_distance)
+        print(f'  Wall distance override: {_wall_distance:.2f}m (--wall-distance)')
 
     if is_external_mjcf:
         # Go2 / Menagerie: load via from_xml_path (handles <include>, meshdir)
@@ -770,6 +951,64 @@ def main():
             'purkinje_cells', 'dcn',
         }
     creature.brain.config.pci_interval = args.pci_interval
+    # Eligibility-Zeitkonstante (#215). Default None => Config unberuehrt.
+    _el_args = (getattr(args, 'eligibility_decay', None),
+                getattr(args, 'eligibility_consume', None))
+    if any(a is not None for a in _el_args):
+        _snn_el = getattr(creature, 'snn', None)
+        if _snn_el is not None and hasattr(_snn_el, 'config'):
+            if _el_args[0] is not None:
+                # Lokaler Alias: main() enthaelt weiter unten ein 'import math',
+                # wodurch 'math' fuer die gesamte Funktion lokal wird und hier noch
+                # nicht gebunden ist (UnboundLocalError).
+                import math as _math
+                _snn_el.config.eligibility_decay = float(_el_args[0])
+                _snn_el._elig_decay = float(_el_args[0])
+                _d = float(_el_args[0])
+                _hl = _math.log(0.5) / _math.log(_d) if 0 < _d < 1 else float('inf')
+                print(f'  Eligibility decay: {_el_args[0]} per SNN step '
+                      f'(half-life ~{_hl:.0f} SNN steps = ~{_hl/10:.0f} control steps '
+                      f'at substeps 10; STDP coincidence trace unchanged at 0.95)')
+            if _el_args[1] is not None:
+                _snn_el.config.eligibility_consume = float(_el_args[1])
+                print(f'  Eligibility consume: {_el_args[1]} after each reward')
+        else:
+            print('  WARNING: --eligibility-* requested but no SNN config found')
+    # PE/R-Mischung im Lernsignal (#215). Default None => Config unberuehrt.
+    if getattr(args, 'pe_blend', None) is not None:
+        _snn_pe = getattr(creature, 'snn', None)
+        if _snn_pe is not None and hasattr(_snn_pe, 'config'):
+            _snn_pe.config.pe_blend = float(args.pe_blend)
+            print(f'  PE blend: {args.pe_blend} '
+                  f'(learning signal = {1.0-float(args.pe_blend):.2f}*R + '
+                  f'{float(args.pe_blend):.2f}*(-PE))')
+        else:
+            print('  WARNING: --pe-blend requested but no SNN config found')
+    # Reward-Baseline (Schultz 1997) -- siehe SNNConfig.reward_baseline.
+    # Default off => Config unberuehrt => bit-identisch.
+    if getattr(args, 'reward_baseline', False):
+        _snn = getattr(creature, 'snn', None)
+        if _snn is not None and hasattr(_snn, 'config'):
+            _snn.config.reward_baseline = True
+            _snn.config.reward_baseline_alpha = float(args.reward_baseline_alpha)
+            print(f'  Reward baseline: ON (alpha={args.reward_baseline_alpha}) '
+                  f'-- R-STDP modulates with R - E[R], not raw R')
+        else:
+            print('  WARNING: --reward-baseline requested but no SNN config found')
+    # Empowerment A/B (#230): override the intrinsic-sum weight of empowerment.
+    # Default None => leave the config value (1.0) => bit-identical. The empowerment
+    # term currently saturates at a constant +0.30 offset (dead weight); set 0 to
+    # remove it and A/B distance/behaviour against the default run (same seed).
+    if args.empowerment_weight is not None:
+        creature.brain.config.empowerment_weight_intrinsic = float(args.empowerment_weight)
+        print(f'  Empowerment weight (intrinsic sum): {args.empowerment_weight} (override; A/B #230)')
+    # Lever C (Task #84): learning-progress curiosity. Set live on the already-built
+    # CuriosityDrive config (compute_intrinsic_reward reads self.config every step).
+    # Default off => untouched => bit-identical.
+    if args.curiosity_learning_progress and hasattr(creature.brain, 'curiosity'):
+        creature.brain.curiosity.config.learning_progress_mode = True
+        creature.brain.curiosity.config.lp_scale = float(args.curiosity_lp_scale)
+        print(f'  Curiosity: learning-progress mode ON (lp_scale={args.curiosity_lp_scale}; Lever C, Task #84)')
     # Dream consolidation: enabled for wall training (Issue #103).
     # Periodic dreams at interval=500 (~every 16s at 30ms/step).
     # PLUS: explicit dream after each wall hit for obstacle pattern consolidation.
@@ -923,7 +1162,7 @@ def main():
     if _use_opencat_gait:
         # Bittle: use OpenCat controller (firmware-level abstraction)
         from src.body.opencat_controller import OpenCatController
-        spinal_cpg = OpenCatController()
+        spinal_cpg = OpenCatController(steering_mode=args.steering_mode)
         spinal_cpg.set_gait('trot')
         print(f'  CPG: OPENCAT CONTROLLER (walk={spinal_cpg.cycle_time:.3f}s, '
               f'{len(spinal_cpg._gait_frames)} frames, 50 Hz interpolated)')
@@ -967,7 +1206,11 @@ def main():
     # without overwhelming the stable CPG pattern.
     _disable_reflexes = _use_opencat_gait
     if _disable_reflexes:
-        creature.motor_scale = 0.3          # damped SNN — learn without destabilizing
+        # SNN-Anteil am Motor. Fest verdrahtet 0.3; seit 26.07.2026 ueber
+        # --snn-motor-scale einstellbar, Default unveraendert.
+        _ms = getattr(args, 'snn_motor_scale', None)
+        _ms = 0.3 if _ms is None else float(_ms)
+        creature.motor_scale = _ms          # damped SNN — learn without destabilizing
         creature._spinal_segments = None    # disable: OpenCat position control, not torque
         _profile_balance = profile.get('opencat_balance', True) if profile else True
         if getattr(args, 'no_balance', False) or not _profile_balance:
@@ -978,7 +1221,7 @@ def main():
             # Mogli/Freenove/Go2 behaviour unchanged.
             creature._opencat_balance = None
             _bal_why = '--no-balance' if getattr(args, 'no_balance', False) else 'profile'
-            print('  Motor overlays: SNN at 30%, reflexes OFF, spinal segments OFF, '
+            print(f'  Motor overlays: SNN at {_ms:.0%}, reflexes OFF, spinal segments OFF, '
                   f'OpenCat balance OFF ({_bal_why})')
         else:
             # OpenCat balance controller (IMU → servo corrections)
@@ -997,7 +1240,7 @@ def main():
                 ],
                 gain_scale=0.6,    # reduce gains for MuJoCo (real HW coefficients too aggressive)
             )
-            print('  Motor overlays: SNN at 30%, reflexes OFF, spinal segments OFF, '
+            print(f'  Motor overlays: SNN at {_ms:.0%}, reflexes OFF, spinal segments OFF, '
                   'OpenCat balance ON')
 
     print(f'\n  -- Phase 2: Competence-Gated Handoff --')
@@ -1020,6 +1263,7 @@ def main():
     _damaged_actuators = []
     _leg_damage_applied = False
     _leg_damage_at_step = args.leg_damage_at  # 0 = from start
+    _pin_applied = False  # --pin-base-at diagnostic (true wedged stuck)
     if args.leg_damage and _leg_damage_at_step == 0:
         # Immediate damage from start
         n_act = world.n_actuators
@@ -1166,7 +1410,7 @@ def main():
         print(f'  LightMemory: enabled (gain=0.4, timeout=10s)')
 
     start_step = 0
-    _resume_spatial_map = None   # spatial_map is built later (~L1431); stash + apply after creation
+    _resume_spatial_map = None   # spatial_map is built later (~L1524); stash + apply after creation
     if args.resume and os.path.exists(args.resume):
         print(f'\n  Resuming from {args.resume}...')
         ckpt = torch.load(args.resume, map_location=device, weights_only=False)
@@ -1183,7 +1427,7 @@ def main():
         if cb and 'cerebellum_state' in ckpt:
             cb.load_state_dict(ckpt['cerebellum_state'])
         # v4.2: Restore spatial map — DEFERRED: the spatial_map object is built
-        # later (~L1431). Stash the state now, load it right after creation.
+        # later (~L1524). Stash the state now, load it right after creation.
         if 'spatial_map' in ckpt:
             _resume_spatial_map = ckpt['spatial_map']
         start_step = ckpt.get('step', 0)
@@ -1266,6 +1510,7 @@ def main():
                 'scene': terrain_cfg.terrain_type,
                 'difficulty': terrain_cfg.difficulty,
                 'steps': total_steps,
+                'record_interval': args.record_interval,   # pose-logging cadence; render_bittle reads this for sim_dt timing
                 'device': device,
                 'version': 'v0.8.1',
                 'n_neurons': creature.snn.config.n_neurons,
@@ -1278,6 +1523,45 @@ def main():
                     'n_dcn': len(creature.snn.populations.get('dcn', [])),
                     'n_motor_hidden': len(creature.snn.populations.get('motor_hidden', [])),
                     'n_total': creature.snn.config.n_neurons,
+                },
+                # Observation-only: makes every FLOG self-describing so a
+                # variance study can pair runs by seed + the gated knobs.
+                # Metadata only — does NOT touch physics/learning (bit-identical).
+                #
+                # The behaviour-defining flags below were MISSING until task #95, and it
+                # cost a full session: run B (v043_1782653493) turned out to have used
+                # seed 4 rather than the default 42, and a different wall_memory_weight
+                # than the log entries claimed.  Both had to be back-computed from the
+                # measurements, and every A/B comparison made against it in the meantime
+                # was void.  A run that cannot say how it was produced is not evidence.
+                # If a flag changes behaviour, it belongs here.
+                'config': {
+                    'seed': args.seed,
+                    'wall_distance': args.wall_distance,
+                    'no_wall_reset': bool(args.no_wall_reset),
+                    'no_balance': bool(args.no_balance),
+                    'no_drives': bool(args.no_drives),
+                    'coord_reward_weight': args.coord_reward_weight,
+                    'reward_blend': args.reward_blend,
+                    'snn_substeps': args.snn_substeps,
+                    # --- task #84 wall avoidance -------------------------------------
+                    'imu_obstacle': bool(getattr(args, 'imu_obstacle', False)),
+                    'block_aversion_weight': float(getattr(args, 'block_aversion_weight', 0.0)),
+                    'wall_memory_weight': float(getattr(args, 'wall_memory_weight', 0.0)),
+                    'wall_memory_radius': float(getattr(args, 'wall_memory_radius', 0.0)),
+                    'danger_steer_weight': float(getattr(args, 'danger_steer_weight', 0.0)),
+                    'danger_steer_radius': float(getattr(args, 'danger_steer_radius', 0.0)),
+                    # --- task #92 steering -------------------------------------------
+                    'steering_mode': str(getattr(args, 'steering_mode', 'offset')),
+                    # --- learning / curiosity ----------------------------------------
+                    'curiosity_learning_progress': bool(getattr(args, 'curiosity_learning_progress', False)),
+                    'curiosity_lp_scale': float(getattr(args, 'curiosity_lp_scale', 1.0)),
+                    'neural_cpg': bool(getattr(args, 'neural_cpg', False)),
+                    'hardware_sensors': bool(getattr(args, 'hardware_sensors', False)),
+                    'fresh': bool(getattr(args, 'fresh', False)),
+                    'steps': int(getattr(args, 'steps', 0)),
+                    'scene': str(getattr(args, 'scene', '')),
+                    'creature_name': str(getattr(args, 'creature_name', '')),
                 },
             }
             recorder = TrainingRecorder(flog_path, meta=flog_meta)
@@ -1327,6 +1611,21 @@ def main():
     step_times = deque(maxlen=2000)  # Bounded — prevents O(N) growth over long runs
     last_pci = 0.0
     brain_result = {}
+
+    # --- Stuck detection (Increment A2, observation only — Decision #203) ---------
+    # Sim ground-truth label vs. hardware-available accelerometer proxy. Updated
+    # every step (below); only the current value is written to FLOG at log_every.
+    # Constants are starting points, to be tuned against the proxy<->label
+    # correlation study. NOT used for learning or control (runs stay bit-identical).
+    STUCK_WINDOW = 30          # ~1.9 s at ~16 sps (hardware-sensors run)
+    STUCK_DISP_EPS = 0.002     # m net displ. over window; ~1/2 the observed steady-walk floor (~0.004, Run-D #95)
+    STUCK_SPEED_EPS = 0.02     # m/s instantaneous (logged for comparison only)
+    _acc_grav_ema = None        # lazy-init from first valid reading (avoids 9.81-vs-0 startup spike)
+    _acc_dyn_ema = 0.0          # high-pass dynamic-acceleration energy (hardware-able proxy)
+    _horiz_speed = 0.0
+    _progress = float('nan')
+    _pos_window = deque(maxlen=STUCK_WINDOW)   # base (x,y) history for net-displacement label
+    _stuck_truth = False
 
     # Drive loop state (for logging)
     current_behavior = 'walk'
@@ -1469,6 +1768,86 @@ def main():
     hypothesis_generator = HypothesisGenerator(min_insight_confidence=0.5)
     print(f'  HypothesisGenerator: v0.1.0 (Phase D meta-learning loop)')
 
+    # Increment b (#208): buffered IMU coordination reward (flag-gated, default OFF).
+    # Rolling ~2000-step buffer of acc_x + pitch_rate; every _COORD_K steps the gait-band
+    # spectral concentration (peak/sum, periods 8..120, detrended) is recomputed and held.
+    # Validated walk-vs-babble separation 1.69x @ W=2000 (substrate #207/#208). When the
+    # weight is 0.0 the whole computation is gated out -> bit-identical to baseline.
+    _coord_w = float(args.coord_reward_weight)
+    _COORD_W = 2000          # buffer length (validated sweet spot)
+    _COORD_K = 250           # recompute interval (value held between)
+    _coord_buf_ax = deque(maxlen=_COORD_W)
+    _coord_buf_pr = deque(maxlen=_COORD_W)
+    _coord_concentration = 0.0
+    # Block aversion (#213/#206): rolling yaw-scrub buffer. Intrinsic, flag-gated.
+    _block_w = float(args.block_aversion_weight)
+    _block_buf = deque(maxlen=args.block_aversion_window)
+    _steer_buf = deque(maxlen=args.block_aversion_window)   # commanded steering, fed back into the variance (efference copy)
+    _block_aversion = 0.0
+    _wall_mem_w = float(args.wall_memory_weight)   # Task #84 step 2: anticipatory boundary-aversion weight (0.0=off=bit-identical)
+    _wall_mem_r = float(args.wall_memory_radius)   # Task #84 step 2: anticipation radius (m)
+    # Task #84 step 4: the away-from-danger DRIVE (the actor steps 1-3 never had).
+    _danger_w = float(args.danger_steer_weight)    # 0.0 = off = bit-identical
+    _danger_r = float(args.danger_steer_radius)
+    _danger_steer = 0.0                            # steering contribution applied this step
+    _danger_side = 0                               # committed evasion side: +1 = turn right, -1 = turn left, 0 = not committed
+    _DANGER_HEADON_EPS = 0.15                      # |sin(bearing)| below this counts as head-on
+    _danger_steps = 0                              # diagnostic: steps the drive was active
+    if _danger_w > 0.0:
+        print(f'  Danger steer drive: ON  weight={_danger_w:.3f}  radius={_danger_r:.2f}m  '
+              f'(continuous away-from-danger actor, pre-efference)')
+    _wall_anchored = False   # Task #84 step 1: latch -- danger landmark stamped ONCE at first wall contact (no per-step re-averaging -> no drift)
+    _WALL_ANCHOR_MIN_X = 0.15   # Task #84 step 1 fix: a progress-stall only counts as WALL contact once the robot has walked INTO the wall zone (true fwd x; wall face 0.25 / torso stop ~0.174). Without it the stall fires during the early maturation/arc phase and anchors the danger landmark near home (observed: conf 0.37 => written ~step 57). Sim-side scaffold; HW-honest IMU-only blocked-detector is the deferred pre-step-2 audit.
+    # Obstacle Run-and-Tumble (#108 RT, Marc): discrete RUN/SNIFF/TUMBLE driven by
+    # the IMU block signal, mirroring the chemotaxis state machine. Active only under
+    # --imu-obstacle. RUN = straight, full gait (kwkF); TUMBLE = committed turn at
+    # full gait (kwkL); SNIFF = evaluate block_aversion, tumble again if still blocked.
+    # Replaces the continuous throttle+bias reflex that trapped the robot in slow-turn
+    # limbo. The primitives (forward, turn) already exist — this just sequences them.
+    _OB_STATE = 'RUN'
+    _OB_TIMER = int(args.imu_ob_run)
+    _OB_STEER = 0.0                                   # steering applied this step (0 in RUN, committed in TUMBLE)
+    _OB_RUN = int(args.imu_ob_run)
+    _OB_TUMBLE = int(args.imu_ob_tumble)
+    _OB_TURN_GAIN = float(args.imu_ob_turn_gain)
+    _OB_BLOCK_ON = float(args.imu_ob_block_on)
+    _ob_tumbles = 0
+    _yaw_scrub_val = 0.0
+    if _block_w > 0.0:
+        print(f'  Block aversion: ON  weight={_block_w:.3f}  window={args.block_aversion_window}  '
+              f'(intrinsic; the drive machinery must LEARN to avoid)')
+    if _coord_w > 0.0:
+        print(f'  Coordination reward: ON  weight={_coord_w:.3f}  buffer W={_COORD_W} K={_COORD_K}')
+
+    # ---- Live dashboard (Task #61/#70) ---------------------------------------
+    # Push the REAL flog_data stats dict to the ws://localhost:5001 broadcaster
+    # (dashboard_views #61); viewer = src/viz/sim_live.html. ECHTE WERTE ODER
+    # NICHTS (#196): forward exactly the FLOG dict, never a derived value.
+    # Default OFF => no call => bit-identical. ON => additive observability only
+    # (no SNN/training touch, like the #152 logging fix). Live cadence follows
+    # --log-every (the push sits in the flog gate); the wall test runs at 1.
+    _dash_on = bool(getattr(args, 'dashboard', False))
+    _dash_push = None
+    if _dash_on:
+        try:
+            from src.viz.dashboard_views import start_websocket, update_training_state
+            start_websocket()
+            _dash_meta = {'source': 'sim', 'creature': args.creature_name,
+                          'scene': args.scene, 'wall_distance': float(args.wall_distance),
+                          'total_steps': total_steps, 'seed': args.seed}
+
+            def _dash_push(_fd, _m=_dash_meta, _u=update_training_state):
+                _u({**_fd, **_m})
+
+            print('  \U0001f4e1 Live dashboard: ON  ws://localhost:5001  '
+                  '(open src/viz/sim_live.html in a browser)')
+            print(f'     live cadence = --log-every ({log_every}); use 1 for a smooth view')
+            if recorder is None:
+                print('     \u26a0 FLOG is OFF (--no-flog) -> no live data will be pushed')
+        except Exception as _dash_e:
+            _dash_on = False
+            print(f'  \u26a0 Live dashboard disabled ({_dash_e}); run continues normally')
+
     for step in range(start_step, total_steps):
         t_step = time.perf_counter()
         _tp0 = t_step  # profile marker
@@ -1572,6 +1951,22 @@ def main():
                 print(f'\n  *** INJURY at step {step}: {args.leg_damage.upper()} leg FAILED ***')
                 print(f'      The creature must detect and adapt autonomously.\n')
 
+        # --- Diagnostic: pin base horizontally (true "wedged" stuck, observation only) ---
+        # Viscously locks base x/y translation IN THE PHYSICS, so the accelerometer
+        # reflects a body that cannot translate while the gait keeps churning. Only
+        # active with --pin-base-at; runs without the flag are unchanged (bit-identical).
+        # Decisive test for the hardware-stuck question (Lesson #205): does the accel
+        # separate a body that is genuinely held? Fallback record before the forward-reward pivot.
+        if args.pin_base_at >= 0 and not _pin_applied and step >= args.pin_base_at:
+            _base_dof = 0
+            for _j in range(world._model.njnt):
+                if world._model.jnt_type[_j] == mujoco.mjtJoint.mjJNT_FREE:
+                    _base_dof = int(world._model.jnt_dofadr[_j])
+                    break
+            world._model.dof_damping[_base_dof:_base_dof + 2] = 1000.0  # lock horizontal transl.
+            _pin_applied = True
+            print(f'\n  *** BASE PINNED at step {step}: horizontal translation locked (wedged) ***\n')
+
         ne_lvl_drive = creature.snn.neuromod_levels.get('ne', 0.2)
         desired_speed = max(0.15, ne_lvl_drive * 0.5)
         sensor_data['desired_velocity'] = desired_speed
@@ -1583,6 +1978,47 @@ def main():
         n_act = world.n_actuators
         sensor_data['joint_positions'] = world._data.qpos[7:7+n_act].copy()
         sensor_data['motor_commands'] = getattr(creature, '_last_controls', np.zeros(n_act))
+
+        # --- Stuck detection update (observation only; Decision #203) ------------
+        # Label = gait commanded but NO NET PROGRESS over the window. Instantaneous
+        # |xy-velocity| is fooled by in-place oscillation/babbling (#88), so the
+        # label uses windowed net displacement of the base (framepos = sim-only
+        # trainer ground truth, brain never sees it; #59). Proxy = dynamic
+        # (gravity-removed) accelerometer energy, which DOES exist on hardware.
+        _gait_active = _use_opencat_gait and not is_fallen
+        _horiz_speed = float(np.linalg.norm(world._data.qvel[0:2]))   # instantaneous (oscillation-fooled)
+        _xy = world._data.qpos[0:2].copy()                            # sim-only ground truth (#59)
+        _pos_window.append(_xy)
+        _progress = (float(np.linalg.norm(_xy - _pos_window[0]))
+                     if len(_pos_window) == _pos_window.maxlen else float('nan'))
+        _acc_vec = np.asarray(sensor_data.get('linear_acceleration', np.zeros(3)), dtype=np.float64)
+        if _acc_grav_ema is None and float(np.linalg.norm(_acc_vec)) > 1.0:
+            _acc_grav_ema = _acc_vec.copy()                           # lazy seed from first valid reading
+        if _acc_grav_ema is not None:
+            _acc_grav_ema = 0.98 * _acc_grav_ema + 0.02 * _acc_vec
+            _acc_dyn = float(np.linalg.norm(_acc_vec - _acc_grav_ema))
+            _acc_dyn_ema = 0.9 * _acc_dyn_ema + 0.1 * _acc_dyn
+        # Increment b (#208): feed buffered IMU coordination signal (gated; OFF -> no-op).
+        if _coord_w > 0.0:
+            _coord_buf_ax.append(float(_acc_vec[0]))
+            _coord_buf_pr.append(float(np.asarray(sensor_data.get('angular_velocity', (0.0, 0.0, 0.0)))[1]))
+            if step % _COORD_K == 0 and len(_coord_buf_ax) == _COORD_W:
+                _cc = []
+                for _b in (_coord_buf_ax, _coord_buf_pr):
+                    _x = np.asarray(_b, dtype=np.float64)
+                    _x = _x - _x.mean()
+                    _tt = np.arange(len(_x))
+                    _x = _x - np.polyval(np.polyfit(_tt, _x, 1), _tt)
+                    _sp = np.abs(np.fft.rfft(_x * np.hanning(len(_x)))) ** 2
+                    _fr = np.fft.rfftfreq(len(_x))
+                    _pe = np.where(_fr > 0, 1.0 / np.maximum(_fr, 1e-12), np.inf)
+                    _bd = (_pe >= 8.0) & (_pe <= 120.0)
+                    _s = _sp[_bd].sum()
+                    _cc.append(float(_sp[_bd].max() / _s) if _s > 0 else 0.0)
+                _coord_concentration = float(np.mean(_cc))
+        _stuck_truth = bool(_gait_active
+                            and len(_pos_window) == _pos_window.maxlen
+                            and _progress < STUCK_DISP_EPS)
 
         # Foot contact sensing (Phase A of Terrain-Adaptive Locomotion)
         foot_sensor.update(world._model, world._data, step)
@@ -1637,6 +2073,15 @@ def main():
         _qw_sp, _qx_sp, _qy_sp, _qz_sp = world._data.qpos[3:7]
         _yaw_sp = float(np.arctan2(2.0 * (_qw_sp * _qz_sp + _qx_sp * _qy_sp),
                                     1.0 - 2.0 * (_qy_sp * _qy_sp + _qz_sp * _qz_sp)))
+        # Task #84 step 1: wall-zone flag, used ONLY by the danger-anchor below (a
+        # write-once landmark stamp, which the brain does not read). IMPORTANT: do NOT
+        # gate update_position on this. spatial_map.position and get_explored_ratio() ARE
+        # read by the brain via extra_sensor_data (spatial_x/y/explored/dist_home) and by
+        # curiosity grid_coverage -- so ANY change to the dead-reckoned advance is NOT
+        # control-neutral (it shifted the headline 0.292->0.274). The write-once latch
+        # already fixes landmark drift, so no freeze is needed -- update_position stays
+        # exactly as baseline.
+        _at_wall_zone = (cur_x >= _WALL_ANCHOR_MIN_X)
         spatial_map.update_position(vel_mps, _yaw_sp, dt=args.timestep)
         _ball_id_sp = mujoco.mj_name2id(world._model, mujoco.mjtObj.mjOBJ_BODY, 'ball')
         if _ball_id_sp >= 0:
@@ -1654,8 +2099,32 @@ def main():
                                             valence=1.0, distance=_light_dist)
         _obs_dist_sp = sensor_data.get('obstacle_distance', -1.0)
         if _obs_dist_sp >= 0 and _obs_dist_sp < 0.5:
+            # Rangefinder path (creatures with an ultrasonic sensor; never fires for
+            # the Bittle, which is IMU-only -> obstacle_distance stays at no-hit).
             _wall_rel_sp = np.array([_obs_dist_sp * np.cos(_yaw_sp), _obs_dist_sp * np.sin(_yaw_sp)])
-            spatial_map.observe_landmark('wall', _wall_rel_sp, category='obstacle', valence=-0.5)
+            spatial_map.observe_landmark('wall', _wall_rel_sp, category='danger', valence=-1.0,
+                                         distance=float(_obs_dist_sp))
+        elif _stuck_truth and _at_wall_zone and not _wall_anchored:
+            # Contact-anchored wall memory (#232 / Task #84 step 1): the blind dog stores
+            # the "pain" at the FIRST moment forward translation collapses while the gait
+            # is still driving AND the robot has reached the wall zone (cur_x >=
+            # _WALL_ANCHOR_MIN_X -- the wall-zone guard rejects the early maturation/arc
+            # stall that otherwise anchored near home at ~step 57). Progress-stall over
+            # STUCK_WINDOW=30 steps ~1-2 s -- contact-near, vs the ~622-step / ~30 s lag of
+            # block_aversion. Stamped ONCE and latched
+            # (_wall_anchored): re-averaging it every stuck step let the 0.10-m-ahead point
+            # sweep as yaw scrubbed -> the observed rightward drift. Written as a DANGER
+            # landmark (negative valence = the stored pain; readable by get_danger_nearby/
+            # direction_to) ~0.10 m ahead of the dead-reckoned position in the current heading.
+            # WRITE-ONLY: nothing reads it back to steer yet -- that is step 2 (the gated A/B,
+            # the biological turn-away). HONESTY NOTE: _stuck_truth uses sim framepos (trainer
+            # bookkeeping, the brain never sees it, #59); before step 2 reads this into control,
+            # trigger + map position MUST be audited for IMU-only honesty (no privileged qpos
+            # in a brain-read path).
+            _wall_rel_sp = np.array([0.10 * np.cos(_yaw_sp), 0.10 * np.sin(_yaw_sp)])
+            spatial_map.observe_landmark('wall', _wall_rel_sp, category='danger', valence=-1.0,
+                                         distance=0.10)
+            _wall_anchored = True
 
         # --- Issue #75: Sensory environment ---
         if visual_env:
@@ -2193,6 +2662,49 @@ def main():
                 # SAFE: small reward for maintaining distance
                 obstacle_reward = 0.2
             reward += obstacle_reward
+        # IMU-as-rangefinder (#108 reuse, #213 variance): when there is no real
+        # rangefinder (blind IMU Bittle -> _obs_dist < 0), synthesize the distance
+        # from OUR block variance. Maps block_aversion 0..1 -> 0.30..0.0 m so the
+        # EXISTING brake/turn/reverse branch (above + #108) consumes it unchanged:
+        # free walk (aversion 0) -> 0.30 m = no trigger; more blocked = "closer" =
+        # slow -> turn -> stop -> reverse. Injected AFTER the external obstacle_reward,
+        # so that reward stays -1 (OFF) and only the REFLEX sees it -> intrinsic, no
+        # external reward. Uses previous step's _block_aversion (200-step rolling;
+        # 1-step lag negligible). Flag-gated, default off -> bit-identical.
+        if args.imu_obstacle:
+            # Run-and-Tumble obstacle avoidance (#108 RT, Marc). The blind IMU has no
+            # distance sense (the Bittle rangefinder reads a constant ~4.0), so instead
+            # of the continuous throttle+bias reflex (which trapped the robot in slow-turn
+            # limbo), the IMU block signal drives a discrete cycle that SEQUENCES the
+            # primitives that already exist:
+            #   RUN    — straight, full gait (kwkF). Going straight, block_aversion is a
+            #            clean wall reading (residual == raw scrub).
+            #   SNIFF  — at the end of a RUN: still blocked? -> commit a turn.
+            #   TUMBLE — a committed turn at full gait (kwkL) for a fixed span. The
+            #            variance feedback subtracts this commanded yaw, so the next
+            #            SNIFF still reads only wall-scrub, not our own turning.
+            # Over several cycles the heading accumulates until a RUN stays clear =
+            # escape. obstacle_distance is left at its real reading, so the continuous
+            # #108 reflex stays dormant and this is the sole obstacle response. Uses the
+            # PREVIOUS step's _block_aversion (1-step lag, negligible). _OB_STEER is
+            # added to _cpg_steering below. No external reward -> intrinsic.
+            _OB_STEER = 0.0
+            if _OB_TIMER > 0:
+                _OB_TIMER -= 1
+            if _OB_STATE == 'RUN':
+                if _OB_TIMER <= 0:
+                    # SNIFF (instantaneous): evaluate the clean straight-run block reading.
+                    if _block_aversion >= _OB_BLOCK_ON:
+                        _OB_STATE = 'TUMBLE'
+                        _OB_TIMER = _OB_TUMBLE
+                        _ob_tumbles += 1
+                    else:
+                        _OB_TIMER = _OB_RUN          # clear -> keep running straight
+            if _OB_STATE == 'TUMBLE':
+                _OB_STEER = _OB_TURN_GAIN           # committed turn (kwkL), full gait
+                if _OB_TIMER <= 0:
+                    _OB_STATE = 'RUN'
+                    _OB_TIMER = _OB_RUN
         # Pass obstacle distance to sensor_data for cerebellar CF
         sensor_data['obstacle_distance'] = _obs_dist
 
@@ -2209,7 +2721,7 @@ def main():
         _wall_reset = False
 
         # Phase 1: Detect wall contact, start pause
-        if _scene_has_wall and _obs_dist >= 0 and _obs_dist < 0.10 and step > 500 and _wall_pause_counter == 0:
+        if _scene_has_wall and not getattr(args, 'no_wall_reset', False) and _obs_dist >= 0 and _obs_dist < 0.10 and step > 500 and _wall_pause_counter == 0:
             _wall_pause_counter = _WALL_PAUSE_STEPS
             wall_episode_count += 1
             # Negative DA burst: "you hit the wall"
@@ -2489,6 +3001,19 @@ def main():
         # Add to existing steering (VOR etc.)
         _cpg_steering += _reflex_turn_steering
 
+        # Run-and-Tumble committed turn (#108 RT): during a TUMBLE phase, BACK AWAY
+        # WHILE TURNING (kbk + veer). A robot rammed nose-first into the wall cannot
+        # pivot in place — the feet scrub but the body does not rotate (66 tumbles,
+        # 27% turning, heading still 14deg, pos_x pinned). Reversing first unjams it,
+        # and the steering veer rotates the heading as it backs off. This is the dog's
+        # actual escape: back up, turn away, then run. RUN stays forward (kwkF), steer 0.
+        # The continuous #108 reflex above is dormant under --imu-obstacle (obs ~4.0).
+        # The variance feedback removes this commanded yaw from the block read.
+        if args.imu_obstacle:
+            _cpg_steering += _OB_STEER
+            if _OB_STATE == 'TUMBLE':
+                _cpg_freq_direction = -1.0          # reverse to unjam from the wall (kbk)
+
         # v0.4.8: Run-and-Tumble chemotaxis (replaces v0.4.7 continuous steering)
         # Biology: chemotaxis in animals is NOT continuous proportional steering.
         # It is a discrete cycle: SNIFF → TUMBLE → RUN → SNIFF again.
@@ -2562,11 +3087,151 @@ def main():
         if _wall_pause_counter > 0:
             _proximity_amp_scale = 0.0
 
+        # --- Task #84 step 4: away-from-danger DRIVE (the missing actor) ---------
+        # Steps 1-3 established that the robot can FEEL the wall (block_aversion),
+        # REMEMBER it (danger landmark + wall_mem) and stop being fascinated by it
+        # (learning-progress curiosity) -- and still it stands there. Log #184: the
+        # three are not additive. The reason is structural, not a tuning issue:
+        # every one of them produces a SIGNAL, and the only thing in the loop that
+        # ever turns the body is the Run-and-Tumble SNIFF -- a discrete decision taken
+        # once per RUN (~40 steps). Between two SNIFFs the remembered wall has no path
+        # to the motor at all. Feeling without an actor is paralysis; that is exactly
+        # what the runs show.
+        #
+        # So: a drive, not a reward. A quiet constant push away from a remembered
+        # danger, applied EVERY step, straight into the steering the CPG already takes.
+        # Biology: this is not deliberation, it is the same reflexive negative taxis a
+        # woodlouse has -- gradient in, turn out, no representation in between.
+        #
+        # Geometry (spatial_map.direction_to): bearing 0 = straight ahead, +pi/2 = LEFT,
+        # -pi/2 = RIGHT. CPG steering convention is the opposite sign (train_baby negates
+        # the yaw PID at #2089: positive steering = turn RIGHT). Danger on the LEFT
+        # (sin > 0) must therefore produce POSITIVE steering, and vice versa.
+        #
+        # Head-on (bearing ~ 0, sin -> 0) is an unstable equilibrium: the pure gradient
+        # gives no turn precisely when the robot is nose-to-the-wall -- the situation this
+        # whole task is about. Break the symmetry the way an animal does: COMMIT to a side
+        # and keep it while the danger stays ahead (no per-step re-decision, no dithering).
+        # The commitment is released as soon as the danger is behind or out of range.
+        #
+        # Placement is load-bearing: this must land BEFORE _steer_buf.append() below, so
+        # the efference copy subtracts the yaw WE commanded. Applied after that point, the
+        # robot's own escape turn would read as unexplained yaw = wall scrub, block_aversion
+        # would rise from its own evasion, and it would trap itself in the slow-turn limbo
+        # the efference-copy fix removed. Signal stays clean, actor stays free.
+        #
+        # Flag-gated: weight 0.0 => whole block skipped => bit-identical.
+        # SCAFFOLD (same caveat as step 2): the landmark geometry is read from the
+        # dead-reckoned map (privileged vel_mps/cur_x). HW-honest IMU odometry is the
+        # named follow-up -- the drive itself is HW-portable, only its input is not yet.
+        _danger_steer = 0.0
+        if _danger_w > 0.0:
+            _dgr_s = spatial_map.get_danger_nearby(radius=_danger_r)
+            _dir_s = spatial_map.direction_to(_dgr_s.name) if _dgr_s is not None else None
+            if _dir_s is not None:
+                _rel_s, _dist_s = _dir_s
+                _prox_s = max(0.0, 1.0 - _dist_s / max(_danger_r, 1e-6))   # 1 at the landmark -> 0 at radius edge
+                _ahead_s = max(0.0, float(np.cos(_rel_s)))                 # 1 straight ahead -> 0 abeam/behind
+                if _prox_s > 0.0 and _ahead_s > 0.0:
+                    _lat_s = float(np.sin(_rel_s))                          # >0 danger left, <0 danger right
+                    if abs(_lat_s) >= _DANGER_HEADON_EPS:
+                        # Clear bearing: turn away from the side the danger is on.
+                        _danger_side = 1 if _lat_s > 0.0 else -1
+                    elif _danger_side == 0:
+                        # Head-on and not yet committed: pick a side and stay with it.
+                        _danger_side = 1
+                    _danger_steer = _danger_w * float(_danger_side) * _prox_s * _ahead_s
+                    _danger_steps += 1
+                else:
+                    _danger_side = 0        # danger abeam/behind/out of range -> release the commitment
+            else:
+                _danger_side = 0            # nothing remembered nearby
+            _cpg_steering += _danger_steer
+
+        # Task #96 Weg 2: intrinsic curiosity steering. Turn toward the least-visited
+        # nearby space the SpatialMap knows about, scaled by the CuriosityExplorer
+        # drive (bored/high-PE -> turn more) and by how one-sided the novelty is.
+        # The robot heads where the world is still unknown; a wall is self-avoiding
+        # because nothing behind it ever gets visited. NOT external reward, NOT a
+        # hardcoded turn. Uses the previous step's curiosity drive (1-step lag,
+        # negligible, same as the other terms). Added before the efference-copy buffer
+        # so it reads as commanded steering, not wall scrub. 0.0 -> bit-identical.
+        _curiosity_steer = 0.0
+        if getattr(args, 'curiosity_steer_weight', 0.0) != 0.0:
+            _unexp = spatial_map.direction_to_unexplored(
+                radius=float(getattr(args, 'curiosity_steer_radius', 2.0)))
+            if _unexp is not None:
+                _cur_rel, _cur_nov = _unexp
+                _cur_drive = curiosity_explorer.get_exploration_drive()
+                # rel_angle -> steering sign: +left/+, -right/-. sin() saturates the
+                # command for large angles (no runaway) and gives 0 straight ahead.
+                _curiosity_steer = (float(args.curiosity_steer_weight)
+                                    * _cur_drive * _cur_nov * float(np.sin(_cur_rel)))
+                _curiosity_steer = float(np.clip(_curiosity_steer, -1.0, 1.0))
+                _cpg_steering += _curiosity_steer
+
+        # Task #92/#94 DIAGNOSTIC: constant steering injection (measurement scaffold).
+        # Added AFTER every reflex/danger term and BEFORE the efference-copy buffer, so
+        # the yaw it generates is correctly treated as commanded steering (not wall
+        # scrub). Default 0.0 -> bit-identical. Lets analyze_turn_test.py see the real
+        # deg/s that gait_blend produces with a known, steady command and no wall.
+        if getattr(args, 'steering_constant', 0.0) != 0.0:
+            _cpg_steering += float(args.steering_constant)
+
         # Vestibulospinal reflex (Issue #122): extract yaw rate from IMU
         # sensor_data['angular_velocity'] = [wx, wy, wz] in rad/s
         # wz > 0 = turning left (counterclockwise from above)
         # On hardware: MPU6050 gyro_z provides the same signal.
         _yaw_rate = float(sensor_data.get('angular_velocity', [0, 0, 0])[2])
+
+        # Block aversion (intrinsic, #213/#206): the body's own sense of being
+        # stuck, with the robot's OWN behaviour fed back into the variance (Marc).
+        # Raw yaw-scrub is the wall signature, BUT commanded turning ALSO makes yaw,
+        # so a closed-loop escape (turning away) keeps raw scrub high and traps the
+        # robot in slow-turn limbo. Fix (efference copy): over the window, remove the
+        # yaw EXPLAINED by the commanded steering; only the UNEXPLAINED yaw (the wall
+        # scrubbing the body) counts as block. Self-generated turning becomes
+        # invisible to the signal, so the escape can resolve it. Going straight
+        # (steering ~const) -> residual == raw scrub, so the block is still detected.
+        # Computed every step (cheap, logged); used only via _block_w / --imu-obstacle.
+        _block_buf.append(float(_yaw_rate))
+        _steer_buf.append(float(_cpg_steering))
+        if len(_block_buf) >= 20:
+            _y_arr = np.asarray(_block_buf, dtype=float)
+            _s_arr = np.asarray(_steer_buf, dtype=float)
+            _s_var = float(np.var(_s_arr))
+            if _s_var > 1e-6:
+                _a_sy = float(np.mean((_s_arr - _s_arr.mean()) * (_y_arr - _y_arr.mean())) / _s_var)
+                _resid = _y_arr - _a_sy * _s_arr      # yaw minus the commanded (expected) yaw
+            else:
+                _resid = _y_arr                       # going straight: nothing commanded to remove
+            _yaw_scrub_val = float(np.std(_resid))
+            _block_aversion = min(1.0, max(0.0, (_yaw_scrub_val - 0.12) / 0.23))
+        else:
+            _yaw_scrub_val = 0.0
+            _block_aversion = 0.0
+
+        # Task #84 step 2: anticipatory boundary aversion (the dog's boundary-cell memory).
+        # When a remembered DANGER landmark (the wall, written ONCE at first contact in step 1)
+        # is nearby AND roughly ahead, raise block_aversion BEFORE contact -> (1) the existing
+        # Run-and-Tumble SNIFF (--imu-obstacle) crosses _OB_BLOCK_ON earlier and turns away,
+        # and (2) vestibular_discomfort rises IF --block-aversion-weight>0 (the intrinsic learn
+        # signal). One insertion, both flavours, through the existing aversion+turn machinery --
+        # no new hardwired steer. Flag-gated: weight 0.0 => whole block skipped => bit-identical.
+        # SCAFFOLD: direction_to uses the dead-reckoned map (privileged vel_mps/cur_x); HW-honest
+        # IMU odometry is the named follow-up. The memory only exists AFTER first contact, so the
+        # first approach still hits and teaches; later approaches are anticipated.
+        _wall_mem_av = 0.0
+        if _wall_mem_w > 0.0:
+            _dgr = spatial_map.get_danger_nearby(radius=_wall_mem_r)
+            if _dgr is not None:
+                _dir_dg = spatial_map.direction_to(_dgr.name)
+                if _dir_dg is not None:
+                    _rel_dg, _dist_dg = _dir_dg
+                    _prox = max(0.0, 1.0 - _dist_dg / max(_wall_mem_r, 1e-6))   # 0 at radius edge -> 1 at the landmark
+                    _ahead = max(0.0, float(np.cos(_rel_dg)))                   # 1 straight ahead -> 0 to the side/behind
+                    _wall_mem_av = _wall_mem_w * _prox * _ahead
+                    _block_aversion = min(1.0, _block_aversion + _wall_mem_av)
 
         # Build CPG kwargs — yaw_rate only for Mogli (SpinalCPG doesn't use it)
         _cpg_kwargs = dict(
@@ -2613,6 +3278,11 @@ def main():
         cpg_weight = gate.get_cpg_weight()
         creature._cpg_cmd = cpg_cmd
         creature._cpg_weight = cpg_weight
+        # Task #92/#94: hand the controller's pure turn-only delta + its weight to
+        # apply_motor_output, so the steer can be re-applied undamped. Default weight
+        # 0.0 => bit-identical. Only OpenCatController exposes _last_steer_delta.
+        creature._steer_delta = getattr(spinal_cpg, '_last_steer_delta', None)
+        creature._steer_undamped_weight = float(getattr(args, 'steer_undamped', 0.0))
         creature._reflex_cmd = reflex_cmd
         creature._terrain_corr = terrain_corr  # Phase B terrain reflex corrections
         creature._olfactory_steering = sensor_data.get('olfactory_steering', 0.0)
@@ -2644,6 +3314,9 @@ def main():
                 # v0.7.0 Pillar 1-3: Body Awareness + Gait Quality + Spatial Map
                 # Cache stats — only recompute every 100 steps
                 'gait_quality': getattr(gait_analyzer, '_cached_gq', 0.5),
+                # Increment b (#209 fix): buffered IMU coordination -> dampens the exploration
+                # drive (coordinated gait = not bored = no need to babble). 0 when weight=0.
+                'coordination': (_coord_w * min(1.0, _coord_concentration / 0.1)) if _coord_w > 0.0 else 0.0,
                 'gait_periodicity': getattr(gait_analyzer, '_cached_per', 0.0),
                 'gait_jitter': getattr(gait_analyzer, '_cached_jit', 0.0),
                 'gait_height_ratio': getattr(gait_analyzer, '_cached_hr', 0.5),
@@ -2659,7 +3332,7 @@ def main():
                 # A puppy spinning in circles gets dizzy. This feeds into
                 # the emotion system as negative valence, not as a motor
                 # correction (that's the vestibulospinal reflex).
-                'vestibular_discomfort': min(1.0, max(0.0, (abs(_yaw_rate) - 0.3) * 2.0)) if abs(_yaw_rate) > 0.3 else 0.0,
+                'vestibular_discomfort': min(1.0, (min(1.0, max(0.0, (abs(_yaw_rate) - 0.3) * 2.0)) if abs(_yaw_rate) > 0.3 else 0.0) + _block_w * _block_aversion),
             },
         )
 
@@ -2831,7 +3504,7 @@ def main():
         if step > 0 and step % 2000 == 0:
             _gc.collect()
 
-        if recorder and step % 10 == 0:
+        if recorder and step % args.record_interval == 0:
             try:
                 qpos = world._data.qpos
                 extra_creature = dict(step=step, x=float(qpos[0]), y=float(qpos[1]))
@@ -2925,6 +3598,22 @@ def main():
                 flog_data['drift_estimate'] = _safe(spinal_cpg, '_drift_estimate', 0.0)
                 flog_data['vestibular_correction'] = _safe(spinal_cpg, '_vestibular_correction', 0.0)
                 flog_data['vestibular_cycles'] = _safe(spinal_cpg, '_cycles_completed', 0)
+                # Stuck detection (Increment A2): real sim label + hardware-able proxy.
+                flog_data['stuck'] = 1 if _stuck_truth else 0      # gait commanded but no NET progress over window
+                flog_data['progress'] = (0.0 if _progress != _progress else _progress)  # net displacement over window (NaN→0 until full)
+                flog_data['stuck_speed'] = _horiz_speed            # instantaneous |xy-vel| (logged for comparison)
+                flog_data['accel_dyn'] = _acc_dyn_ema              # accel-only proxy (also on hardware)
+                _al = sensor_data.get('linear_acceleration', np.zeros(3))
+                flog_data['acc_x'] = float(_al[0]); flog_data['acc_y'] = float(_al[1]); flog_data['acc_z'] = float(_al[2])
+                # Efference copy (motor command) + CPG phase driver. The forward
+                # model predicts the IMU consequence of the command; without the
+                # command logged it cannot be built. Observation-only, bit-identical.
+                _mc = sensor_data.get('motor_commands', getattr(creature, '_last_controls', None))
+                if _mc is not None:
+                    flog_data['motor_cmd'] = [float(v) for v in np.asarray(_mc).ravel()]
+                _cp = getattr(creature, '_cpg_phase_input', None)
+                if _cp is not None:
+                    flog_data['cpg_phase'] = [float(v) for v in np.asarray(_cp).ravel()]
                 emo = brain_result.get('emotion', {})
                 drv_r = brain_result.get('drives', {})
                 flog_data['emotion_dominant'] = emo.get('dominant_emotion', '')
@@ -2946,12 +3635,81 @@ def main():
                 flog_data['drive_dominant'] = drv_r.get('dominant', '')
                 flog_data['curiosity_reward'] = brain_result.get('curiosity_reward', 0.0)
                 # Baby-KI intrinsic reward components
-                flog_data['intrinsic_reward'] = brain_result.get('intrinsic_reward', 0.0)
+                # intrinsic_reward must come from the SAME compute as ir_* below:
+                # get_intrinsic_reward() (line ~2961) sets creature.brain._intrinsic_reward
+                # AND _intrinsic_components in one pass. brain_result['intrinsic_reward']
+                # is process()'s return = the PREVIOUS step's value (verified: R[t]==Σir[t-1],
+                # 100% of frames), so logging it here lagged R by one step vs its own
+                # decomposition. Log the post-get_intrinsic_reward value so R == Σ ir_* (#227).
+                flog_data['intrinsic_reward'] = float(getattr(creature.brain, '_intrinsic_reward', 0.0)) \
+                    if creature.brain else brain_result.get('intrinsic_reward', 0.0)
+                # Real intrinsic-reward decomposition: signed, WEIGHTED contributions
+                # from cognitive_brain.get_intrinsic_reward() that SUM to intrinsic_reward
+                # (#227). The raw cur/vest/prop signals above never summed to R; these do.
+                _irc = getattr(creature.brain, '_intrinsic_components', None) if creature.brain else None
+                if _irc:
+                    flog_data['ir_vestibular']  = float(_irc.get('vestibular', 0.0))
+                    flog_data['ir_curiosity']   = float(_irc.get('curiosity', 0.0))
+                    flog_data['ir_empowerment'] = float(_irc.get('empowerment', 0.0))
+                    flog_data['ir_proprio']     = float(_irc.get('proprio', 0.0))
+                    flog_data['ir_scent']       = float(_irc.get('scent', 0.0))
                 flog_data['vestibular_discomfort'] = brain_result.get('vestibular_discomfort', 0.0)
+                flog_data['block_aversion'] = _block_aversion      # intrinsic stuck-aversion (#213/#206)
+                flog_data['yaw_scrub'] = _yaw_scrub_val            # rolling yaw std (the wall signature)
+                flog_data['wall_mem_aversion'] = _wall_mem_av      # Task #84 step 2: anticipatory boundary-aversion contribution (0.0 when flag off)
+                flog_data['ob_steer'] = float(_OB_STEER)           # committed RT turn applied (0 in RUN, gain in TUMBLE)
+                flog_data['danger_steer'] = float(_danger_steer)   # Task #84 step 4: continuous away-from-danger drive applied to steering (0.0 when flag off)
+                flog_data['danger_side'] = int(_danger_side)       # Task #84 step 4: committed evasion side (+1 right, -1 left, 0 not committed)
+                # Task #84 step 4 diagnosis: steering in a trot works ONLY through asymmetric
+                # stride length -- no step, no turn. If the brake reflex has zeroed the gait
+                # amplitude, every steering command (drive AND tumble) is applied to a gait that
+                # is not running. These two fields make that visible instead of inferred.
+                flog_data['amp_scale'] = float(current_amp_scale * tr_amp * _proximity_amp_scale * directed_learning.amp_scale_modifier)
+                flog_data['prox_amp_scale'] = float(_proximity_amp_scale)   # 0.0 = brake reflex killed the CPG
+                # Task #92: the FINAL steering value handed to the controller, after every
+                # contribution has been summed.  Without this the individual terms
+                # (danger_steer, ob_steer, reflex_turn, the VOR's steering_offset) can each
+                # look correct while cancelling each other out -- which is exactly what a
+                # 15x gap between the isolated bench (6.65 deg/s) and the training loop
+                # (0.45 deg/s) looks like.  Log the sum, not just the parts.
+                flog_data['cpg_steering'] = float(_cpg_steering)
+                flog_data['reflex_turn_steering'] = float(_reflex_turn_steering)
+                flog_data['curiosity_steer'] = float(_curiosity_steer)   # Task #96 Weg 2 intrinsic curiosity turn
+                # Task #94: a turn IS a left/right asymmetry in the joint commands.
+                # Layout is [RF_sh, RF_kn, LF_sh, LF_kn, RR_sh, RR_kn, LR_sh, LR_kn],
+                # so right = indices 0,1,4,5 and left = 2,3,6,7.  Log the asymmetry at
+                # three points in the chain: what the CPG asks for, what the SNN adds,
+                # and what survives the mix.  If the SNN's asymmetry is the NEGATIVE of
+                # the CPG's, the brain is steering back against its own body -- which is
+                # the only remaining explanation for a gait that matches the damped chain
+                # while the turn does not.
+                def _asym(v):
+                    if v is None or len(v) < 8:
+                        return 0.0
+                    right = (float(v[0]) + float(v[1]) + float(v[4]) + float(v[5])) / 4.0
+                    left = (float(v[2]) + float(v[3]) + float(v[6]) + float(v[7])) / 4.0
+                    return right - left
+                flog_data['asym_cpg'] = _asym(getattr(creature, '_cpg_cmd', None))
+                flog_data['asym_snn'] = _asym(getattr(creature, '_dbg_snn_controls', None))
+                flog_data['asym_mixed'] = _asym(getattr(creature, '_dbg_mixed_controls', None))
+                flog_data['ob_tumbles'] = int(_ob_tumbles)         # cumulative tumble count (#108 RT)
                 flog_data['proprio_delta'] = brain_result.get('proprioceptive_delta', 0.0)
                 flog_data['body_anomaly_ema'] = brain_result.get('body_anomaly_ema', 0.0)
                 flog_data['learning_signal'] = learning_signal
+                # Substrat-Gesundheit (Logbuch #214, 25.07.2026). Feuerraten wurden
+                # bisher NIRGENDS geloggt -- ein Netz mit 30-74 % stummen Neuronen
+                # blieb ueber saemtliche Laeufe unsichtbar, waehrend am Lernsignal
+                # gearbeitet wurde. R-STDP braucht Koinzidenz, Koinzidenz braucht
+                # Spikes. snn_rate_window mitloggen: das Zaehlfenster wird nach jedem
+                # Homoeostase-Intervall genullt, bei kleinem Fenster sind die Raten
+                # Rauschen und duerfen nicht ausgewertet werden.
+                try:
+                    flog_data.update(creature.snn.get_health())
+                except AttributeError:
+                    pass   # aeltere SNN-Version ohne get_health()
                 flog_data['reward_blend'] = _blend
+                if _coord_w > 0.0:
+                    flog_data['coord_conc'] = _coord_concentration
                 # Issue #75: Sensory environment
                 if sensory_env or visual_env:
                     flog_data['smell_strength'] = sensor_data.get('smell_strength', 0.0)
@@ -3144,6 +3902,11 @@ def main():
                     for mk, mv in mogli_stats.items():
                         flog_data[f'mogli_{mk}'] = float(mv)
                 recorder.record_training_stats(flog_data)
+                if _dash_push is not None:
+                    try:
+                        _dash_push(flog_data)
+                    except Exception:
+                        pass  # never let the live push affect the run
             except Exception as e:
                 # Show traceback ONCE so we can diagnose persistent failures;
                 # subsequent failures show only the message to avoid log spam.

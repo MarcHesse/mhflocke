@@ -1,8 +1,18 @@
 """
-MH-FLOCKE — MuJoCo World v0.4.3
+MH-FLOCKE — MuJoCo World v0.4.4
 ========================================
 Physics world management and simulation stepping.
+
+v0.4.4: Accelerometer read (otolith analog). get_sensor_data() now
+  exposes 'linear_acceleration' (3-axis specific force at the IMU site,
+  incl. gravity, m/s^2) via _read_accelerometer(). Observation only —
+  not fed to the SNN and not used in reward, so runs stay bit-identical
+  (Decision #203, known_issue #184).
 """
+
+__version__ = "0.4.4"   # MAJOR.MINOR; MINOR = non-contract change
+__logbook__ = 204       # mh-logbuch module entry
+__status__  = "active"
 
 import numpy as np
 from typing import Dict, List, Tuple, Optional
@@ -517,6 +527,7 @@ class MuJoCoWorld:
             'forward_velocity': float(vel[3]),  # X-Richtung
             'upright': float(mat[2, 2]),  # Z-Komponente der Up-Achse (1.0 = aufrecht)
             'obstacle_distance': self._read_rangefinder(),
+            'linear_acceleration': self._read_accelerometer(),  # otolith analog (v0.4.4)
         }
 
     def _read_rangefinder(self, max_range: float = 4.0) -> float:
@@ -561,6 +572,45 @@ class MuJoCoWorld:
             return max_range
 
         return min(raw_dist, max_range)
+
+    def _read_accelerometer(self) -> np.ndarray:
+        """
+        Read the IMU linear-acceleration sensor (otolith analog).
+
+        Returns the 3-axis specific force at the IMU site in the site's
+        local frame, in m/s^2, INCLUDING the gravity reaction — exactly
+        like a real MPU6050: ~(0, 0, +9.81) at rest when upright. This
+        mirrors the hardware accelerometer channel that the WiFi bridge
+        currently parses but discards (known_issue #184).
+
+        Looks up the 'imu_accel' sensor by name, else falls back to the
+        first accelerometer-type sensor in the model. Returns zeros(3)
+        if the model has no accelerometer.
+
+        Observation only: not encoded into the SNN and not used in
+        reward, so adding this call does not change any run (Decision #203).
+        """
+        if self._model is None or self._data is None:
+            return np.zeros(3, dtype=np.float64)
+
+        sensor_id = -1
+        try:
+            sensor_id = mujoco.mj_name2id(
+                self._model, mujoco.mjtObj.mjOBJ_SENSOR, 'imu_accel')
+        except Exception:
+            sensor_id = -1
+
+        if sensor_id < 0:
+            for i in range(self._model.nsensor):
+                if self._model.sensor_type[i] == mujoco.mjtSensor.mjSENS_ACCELEROMETER:
+                    sensor_id = i
+                    break
+
+        if sensor_id < 0:
+            return np.zeros(3, dtype=np.float64)
+
+        adr = self._model.sensor_adr[sensor_id]
+        return self._data.sensordata[adr:adr + 3].copy()
 
     @staticmethod
     def _quat_to_euler(quat):

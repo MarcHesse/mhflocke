@@ -31,7 +31,7 @@ Conversion chain:
 Reference: OpenCatEsp32/src/OpenCat.h, InstinctBittleESP.h
 """
 
-__version__ = "1.0"      # module version (MAJOR.MINOR; MAJOR = contract change)
+__version__ = "1.1"      # module version (MAJOR.MINOR; MAJOR = contract change)
 __logbook__ = 65         # mh-logbuch module entry
 __status__  = "active"    # active | veraltet | neu
 
@@ -197,7 +197,22 @@ class OpenCatController:
             mujoco.mj_step(model, data)
     """
 
-    def __init__(self):
+    def __init__(self, steering_mode: str = 'offset'):
+        """OpenCat gait controller.
+
+        Args:
+            steering_mode: How a steering command turns the body.
+                'offset'     -- legacy: static shoulder bias.  Measured at ~2 deg/s
+                                at full lock, which is below the gait's own 2.84 deg/s
+                                drift (knowledge #271).  Effectively inert, but it is
+                                what every recorded run used, so it stays the default.
+                'gait_blend' -- blend the stride toward OpenCat's own turning table
+                                (trF -> trL, mirrored for right).  Measured at
+                                7.41 deg/s.  Opt in explicitly.
+        """
+        if steering_mode not in ('offset', 'gait_blend'):
+            raise ValueError(f"steering_mode must be 'offset' or 'gait_blend', got {steering_mode!r}")
+        self._steering_mode = steering_mode
         self._mode = Mode.IDLE
         self._current_ctrl = STAND_CTRL.copy()
 
@@ -208,6 +223,16 @@ class OpenCatController:
         self._freq_scale = 1.0      # speed multiplier
         self._amp_scale = 1.0       # amplitude multiplier
         self._steering = 0.0        # left/right bias
+
+        # Task #92/#94: the PURE turning component of this frame's output, captured
+        # BEFORE amplitude scaling.  In gait_blend the stride is a mix of the straight
+        # gait and the turning table; (turn - straight) * mag is the part that carries
+        # the yaw.  The training loop damps the whole CPG command (cpg_weight * pd_scale
+        # ~= 0.16), which shrinks a 7.41 deg/s turn to ~1.  apply_motor_output can add
+        # THIS delta back at (near) full weight so the turn survives while the forward
+        # gait stays damped for stability.  0 in offset mode and at zero steering, so
+        # nothing changes unless a consumer reads it.  Joint deltas only -> HW-portable.
+        self._last_steer_delta = np.zeros_like(STAND_CTRL)
 
         # Pose state
         self._target_pose: Optional[np.ndarray] = None
@@ -411,14 +436,56 @@ class OpenCatController:
         ctrl = (self._gait_frames[i0] * (1.0 - alpha)
                 + self._gait_frames[i1] * alpha)
 
+        # --- Steering ----------------------------------------------------------
+        # Two mechanisms, selected by _steering_mode.
+        #
+        # 'offset' (legacy, default): a static bias added to the shoulder joints.
+        #   Measured (knowledge #271, isolated MuJoCo trial, no SNN/reflexes):
+        #   full lock produces ~2 deg/s of yaw -- LESS than the 2.84 deg/s the trot
+        #   drifts on its own with no command at all.  The reason is structural: a
+        #   trot turns by taking LONGER STRIDES on the outside of the curve, and an
+        #   offset to the rest pose leaves stride length symmetric.  The robot walks
+        #   straight no matter how large the offset gets.  Kept as the default so
+        #   every existing run stays bit-identical.
+        #
+        # 'gait_blend': blend the whole stride toward OpenCat's own turning table.
+        #   OpenCat ships a turning variant of every gait (trF->trL, wkF->wkL, ...)
+        #   in which the entire step pattern differs, not just a joint offset.
+        #   Measured: trL turns at 7.41 deg/s -- 3-4x the offset's full lock, same
+        #   body, same physics, same ground.  The body was never the problem; the
+        #   controller was asking for the turn the wrong way.
+        #
+        #   Sign convention follows the legacy offset (verified in the same trial):
+        #   positive steering = positive yaw = LEFT.  trL is the left turn, so it is
+        #   used directly; a right turn mirrors it across the body axis.
+        #
+        #   HW note: these tables come from the OpenCat firmware and run on the real
+        #   Bittle.  A hand-rolled amplitude modulation would not.
+        if self._steering_mode == 'gait_blend':
+            self._last_steer_delta = np.zeros_like(STAND_CTRL)
+            mag = min(1.0, abs(self._steering))
+            if mag > 0.01:
+                turn_frames = self._get_turn_frames()
+                if turn_frames is not None:
+                    t_ctrl = self._sample(turn_frames, self._phase)
+                    if self._steering < 0.0:                  # right turn: mirror the left one
+                        t_ctrl = self._mirror(t_ctrl)
+                    # Capture the pure turning component BEFORE the mix + before the
+                    # amplitude scaling below, so a consumer (apply_motor_output) can
+                    # re-apply it undamped.  This IS the delta the blend adds to the
+                    # straight stride: (turn - straight) * mag.
+                    self._last_steer_delta = (t_ctrl - ctrl) * mag
+                    ctrl = ctrl * (1.0 - mag) + t_ctrl * mag
+
         # Apply amplitude scaling around STAND_CTRL
         if self._amp_scale != 1.0 or self._maturation < 1.0:
             delta = ctrl - STAND_CTRL
             scale = self._amp_scale * self._maturation
             ctrl = STAND_CTRL + delta * scale
 
-        # Steering: differential shoulder bias
-        if abs(self._steering) > 0.01:
+        # Legacy steering: differential shoulder bias.  Inert (see above), but it is
+        # what every recorded run was produced with, so it stays the default.
+        if self._steering_mode == 'offset' and abs(self._steering) > 0.01:
             s = self._steering * 0.1
             ctrl[0] += s   # RF shoulder
             ctrl[2] -= s   # LF shoulder
@@ -426,6 +493,54 @@ class OpenCatController:
             ctrl[6] -= s   # LR shoulder
 
         return ctrl
+
+    # ---- Steering via turning gaits (mode 'gait_blend') ----
+
+    @staticmethod
+    def _sample(frames: np.ndarray, phase: float) -> np.ndarray:
+        """Interpolate a gait table at a normalised phase (0..1).
+
+        Phase rather than frame index, because the straight and turning tables do
+        not necessarily hold the same number of frames.  Sampling both at the same
+        phase keeps them in step whatever their lengths.
+        """
+        n = len(frames)
+        pos = (phase % 1.0) * n
+        i0 = int(pos) % n
+        i1 = (i0 + 1) % n
+        a = pos - int(pos)
+        return frames[i0] * (1.0 - a) + frames[i1] * a
+
+    @staticmethod
+    def _mirror(ctrl: np.ndarray) -> np.ndarray:
+        """Mirror a control vector across the body's long axis.
+
+        Layout is [RF_sh, RF_kn, LF_sh, LF_kn, RR_sh, RR_kn, LR_sh, LR_kn], so a
+        left/right mirror swaps the front pair and the rear pair.  The shoulder
+        angles of a left and right leg carry the same sign in STAND_CTRL, so the
+        swap alone is the mirror -- no negation.
+
+        OpenCat only ships the LEFT turn of each gait; the right turn is its mirror.
+        """
+        m = ctrl.copy()
+        m[0:2], m[2:4] = ctrl[2:4].copy(), ctrl[0:2].copy()   # front: RF <-> LF
+        m[4:6], m[6:8] = ctrl[6:8].copy(), ctrl[4:6].copy()   # rear:  RR <-> LR
+        return m
+
+    def _get_turn_frames(self) -> Optional[np.ndarray]:
+        """The turning table matching the current gait ('trF' -> 'trL'), cached.
+
+        Returns None when the current gait has no turning variant, in which case
+        steering silently does nothing -- better than turning with the wrong gait.
+        """
+        if self._gait_name is None:
+            return None
+        turn_name = self._gait_name[:-1] + 'L' if self._gait_name.endswith('F') else None
+        if turn_name is None or turn_name not in GAITS:
+            return None
+        if turn_name not in self._gait_cache:
+            self._gait_cache[turn_name] = _precompute_gait(turn_name)
+        return self._gait_cache[turn_name]
 
     def _step_pose(self, dt: float) -> np.ndarray:
         """Blend toward target pose."""

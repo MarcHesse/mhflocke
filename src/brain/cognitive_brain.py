@@ -513,6 +513,7 @@ class CognitiveBrain:
             'scent_reward': _extra.get('scent_reward', 0.0),
             # v0.7.0: Body Awareness + Gait Quality + Spatial Map
             'gait_quality': _extra.get('gait_quality', 0.5),
+            'coordination': _extra.get('coordination', 0.0),  # Increment b (#209 fix): dampens exploration drive
             'limb_dead': _extra.get('limb_dead', []),
             'limb_degraded': _extra.get('limb_degraded', []),
             'spatial_explored': _extra.get('spatial_explored', 0.0),

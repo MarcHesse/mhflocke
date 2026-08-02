@@ -20,6 +20,14 @@ class CuriosityConfig:
     boredom_reward: float = 0.5
     alpha: float = 0.5                # Balance: 0=nur extrinsisch, 1=nur intrinsisch
     running_mean_decay: float = 0.99
+    # Lever C (Task #84): learning-progress curiosity. When True, reward the
+    # DECREASE of prediction error (slow baseline minus fast mean) instead of the
+    # surprise (error above its own recent mean). Unlearnable chaos -- a wall the
+    # world-model can't predict -- keeps error flat-high -> no progress -> ~0 reward
+    # -> the wall stops being "interesting". Default False = unchanged behaviour.
+    learning_progress_mode: bool = False
+    lp_slow_decay: float = 0.999      # slow baseline EMA horizon (~1000 steps)
+    lp_scale: float = 1.0             # scales the progress signal into reward
 
 
 class CuriosityDrive:
@@ -34,6 +42,10 @@ class CuriosityDrive:
         self.config = config or CuriosityConfig()
         self.boredom_counter = 0
         self._running_mean = 0.0
+        self._lp_fast = 0.0              # Lever C: own fast EMA (seeded), decoupled from novelty state
+        self._lp_slow = 0.0             # Lever C: slow baseline EMA for learning-progress
+        self._lp_signal = 0.0           # Lever C: smoothed SIGNED progress (rectified after) -> noise robust
+        self._lp_seeded = False
         self._running_var = 1.0
         self._step_count = 0
         self.last_prediction_error = 0.0
@@ -60,6 +72,31 @@ class CuriosityDrive:
             np.sqrt(self._running_var) + 1e-8)
 
         self.last_prediction_error = prediction_error
+
+        if self.config.learning_progress_mode:
+            # Lever C (Task #84): reward error DECREASE, not error level/surprise.
+            # Two own EMAs, seeded to the first error so they start equal (decoupled
+            # from the novelty-mode running_mean): a fast one and a slower baseline.
+            # progress = baseline - fast, >0 only when recent error has dropped below
+            # the older baseline (the model is learning). A chaotic/unlearnable wall
+            # keeps error flat-high -> fast ~= slow -> ~0 reward -> the wall gets
+            # boring. No boredom_reward branch (that one actively pushed to the wall).
+            if not self._lp_seeded:
+                self._lp_fast = prediction_error
+                self._lp_slow = prediction_error
+                self._lp_signal = 0.0
+                self._lp_seeded = True
+            else:
+                self._lp_fast = (self.config.running_mean_decay * self._lp_fast
+                                 + (1 - self.config.running_mean_decay) * prediction_error)
+                self._lp_slow = (self.config.lp_slow_decay * self._lp_slow
+                                 + (1 - self.config.lp_slow_decay) * prediction_error)
+                # smooth the SIGNED progress (slow-fast) and rectify AFTER: symmetric
+                # noise at a chaotic wall averages to ~0 (no false reward), while a
+                # sustained downward trend (real learning) stays positive.
+                self._lp_signal = (self.config.running_mean_decay * self._lp_signal
+                                   + (1 - self.config.running_mean_decay) * (self._lp_slow - self._lp_fast))
+            return min(self.config.max_reward, max(0.0, self._lp_signal) * self.config.lp_scale)
 
         if normalized_error > self.config.novelty_threshold:
             intrinsic = min(float(normalized_error), self.config.max_reward)
@@ -90,6 +127,10 @@ class CuriosityDrive:
         """Reset für neue Kreatur/Generation."""
         self.boredom_counter = 0
         self._running_mean = 0.0
+        self._lp_fast = 0.0
+        self._lp_slow = 0.0
+        self._lp_signal = 0.0
+        self._lp_seeded = False
         self._running_var = 1.0
         self._step_count = 0
         self.last_prediction_error = 0.0

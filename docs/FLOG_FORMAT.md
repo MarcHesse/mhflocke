@@ -1,9 +1,15 @@
 # FLOG Binary Format — Structure Documentation
 
-**MH-FLOCKE Level 15 v0.8.1**
-**Document Version:** 1.3 — June 20, 2026
+**MH-FLOCKE Level 15 v0.8.2**
+**Document Version:** 1.4 — August 2, 2026
 
 Changelog:
+- 1.4 (August 2026, v0.8.2): Substrate telemetry added to FRAME_TRAINING
+  (`snn_*` group, §4.2). Firing rates, threshold quantiles, homeostasis counts,
+  prediction error, adaptation, and the split of the learning signal into its
+  reward and prediction-error parts. No format change: these are ordinary
+  optional keys, older readers ignore them and older logs render a missing
+  field as `—`.
 - 1.3 (June 2026, v0.8.1): Binary header version (LOG_VERSION) bumped 1 → 2.
   FRAME_TRAINING may carry real per-neuron `spike_raster` and real neuromodulators
   (`serotonin` / `noradrenaline` / `acetylcholine`) from `snn.neuromod_levels`,
@@ -162,6 +168,56 @@ Recorded every 1000 steps. Contains all brain/body metrics.
 | serotonin          | float  | Real serotonin (5-HT) level from `snn.neuromod_levels` (v0.8.1); absent in older logs |
 | noradrenaline      | float  | Real noradrenaline (NE) level (v0.8.1); absent in older logs |
 | acetylcholine      | float  | Real acetylcholine (ACh) level (v0.8.1); absent in older logs |
+
+**Substrate Telemetry (v0.8.2):**
+
+Written per logged step from `SNNController.get_health()`. These describe the
+state of the spiking substrate itself rather than the behaviour it produces, so
+a run that walks badly can be told apart from a run whose neurons are silent,
+saturated, or whose thresholds have drifted.
+
+Rates are measured over `snn_rate_window`, the steps accumulated since the last
+homeostatic interval. That window is **reset after every homeostatic update**,
+so right after a reset the rates are noise — which is why the window length is
+logged alongside them. If the window is empty, only `snn_rate_mean`,
+`snn_rate_med`, `snn_silent_frac`, `snn_sat_frac`, `snn_thr_med` and
+`snn_rate_window` are written; the rest are absent and render as `—`.
+
+| Key                 | Type   | Description                                       |
+|---------------------|--------|---------------------------------------------------|
+| snn_rate_mean       | float  | Mean firing rate over the window                  |
+| snn_rate_med        | float  | Median firing rate                                |
+| snn_rate_window     | int    | Steps the rates are measured over (see above)     |
+| snn_silent_frac     | float  | Fraction of neurons that did not fire at all      |
+| snn_sat_frac        | float  | Fraction with a firing rate above 0.9             |
+| snn_thr_p10         | float  | 10th percentile of the adaptive thresholds        |
+| snn_thr_med         | float  | Median threshold                                  |
+| snn_thr_p90         | float  | 90th percentile threshold                         |
+| snn_thr_uniq        | int    | Number of distinct threshold values. Measured at 4 across 535 neurons — the thresholds form a few clusters, which is why the quantiles are logged and not just the median: a median jumps when a cluster crosses the 50 % mark and does not track a population |
+
+*Homeostatic controller self-report — what the regulator actually applied:*
+
+| Key                 | Type   | Description                                       |
+|---------------------|--------|---------------------------------------------------|
+| snn_homeo_n         | int    | Cumulative number of homeostatic updates so far   |
+| snn_err_mean        | float  | Mean deviation of the firing rate from the target, last update |
+| snn_err_max         | float  | Largest such deviation (signed max, not absolute) |
+| snn_adapt_mean      | float  | Mean threshold adjustment applied, last update    |
+| snn_adapt_max       | float  | Largest absolute adjustment applied               |
+
+*Learning signal — what actually enters the weight update:*
+
+| Key                 | Type   | Description                                       |
+|---------------------|--------|---------------------------------------------------|
+| snn_reward_in       | float  | `reward_signal` argument of the last `apply_rstdp` |
+| snn_pe_in           | float  | `prediction_error` argument of the last `apply_rstdp`. NOT necessarily the same quantity as the `pred_error` field above, which comes from the forward model |
+| snn_pe_blend        | float  | Blend weight w. Above the PE threshold the signal is `(1-w)·R + w·(-PE)` |
+| snn_pe_branch_hits  | int    | Cumulative count of steps that took the PE branch. Compare against `snn_rstdp_calls`: if the ratio is near 1, the reward term carries only `1-w` of the learning |
+| snn_combined        | float  | Resulting combined signal before the baseline      |
+| snn_reward_ema      | float  | Running expectation E[R]. Only updated while `--reward-baseline` is on |
+| snn_baseline_on     | int    | Whether the reward baseline is active (0/1)       |
+| snn_modulator       | float  | Modulator actually multiplied into the weight update: the combined signal, minus E[R] if the baseline is on |
+| snn_rstdp_calls     | int    | Cumulative number of `apply_rstdp` calls          |
 
 **Cerebellum:**
 

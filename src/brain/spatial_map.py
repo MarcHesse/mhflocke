@@ -40,7 +40,7 @@ Biology:
 Author: MH-FLOCKE Level 15 v0.7.0
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __logbook__ = 98
 
 import numpy as np
@@ -247,6 +247,100 @@ class SpatialMap:
         """Shortcut: direction and distance to home."""
         result = self.direction_to('home')
         return result if result else (0.0, 0.0)
+
+    def direction_to_unexplored(self, radius: float = 2.0,
+                                min_gap: float = 1e-3) -> Optional[Tuple[float, float]]:
+        """Direction toward the least-visited nearby space (the curiosity vector).
+
+        Task #96 / Weg 2: the intrinsic 'go where it's new' signal. Scans grid
+        cells within `radius` meters of the current position and builds a vector
+        that points away from well-visited cells and toward unvisited ones. This
+        is the DIRECTION of curiosity; how strongly to act on it is scaled by the
+        CuriosityExplorer's scalar drive in the loop, not here.
+
+        A wall (or any explored dead-end) is self-avoiding under this signal: cells
+        behind a wall never get visited, but cells the robot keeps scrubbing against
+        DO accumulate visits, so the vector points away from the stuck spot toward
+        open space -- avoidance falls out of exploration, no pain signal needed.
+
+        Returns:
+            (rel_angle, novelty) or None if there is no usable gradient.
+            rel_angle: relative to current heading, SAME convention as
+                       direction_to() -- 0 = straight ahead, +pi/2 = 90 deg left,
+                       -pi/2 = 90 deg right.
+            novelty:   0..1, how unexplored the chosen direction is (1 = fully
+                       unvisited neighbourhood). Lets the caller fade the signal
+                       out once the area is known.
+        """
+        gx0, gy0 = self._world_to_grid(self.position[0], self.position[1])
+        cell_size = self.world_size / self.grid_resolution
+        reach = max(1, int(radius / cell_size))
+
+        # Weight each nearby cell by how UNvisited it is (1/(1+visits)) and by
+        # inverse distance, then sum the unit vectors toward those cells. The result
+        # points toward the least-visited, nearest open space.
+        #
+        # Bias correction: the cells around a position are not perfectly symmetric
+        # (the position sits off-centre within its grid cell), so a UNIFORM field
+        # still yields a small diagonal vector. We compute that geometric bias with
+        # flat weights and subtract it, leaving only the true novelty gradient --
+        # a uniform neighbourhood then cancels to zero, no spurious drift.
+        vx = 0.0
+        vy = 0.0
+        wsum = 0.0
+        bx = 0.0     # geometric bias accumulator (flat-weighted unit vectors)
+        by = 0.0
+        bw = 0.0
+        for dgy in range(-reach, reach + 1):
+            for dgx in range(-reach, reach + 1):
+                if dgx == 0 and dgy == 0:
+                    continue
+                gx, gy = gx0 + dgx, gy0 + dgy
+                if not (0 <= gx < self.grid_resolution and 0 <= gy < self.grid_resolution):
+                    continue
+                cell_dist = float(np.hypot(dgx, dgy))
+                if cell_dist > reach:
+                    continue
+                visits = float(self.visit_grid[gy, gx])
+                novelty_w = 1.0 / (1.0 + visits)      # 1 for unvisited, small for well-trodden
+                # world-space direction of this cell from current position
+                wx, wy = self._grid_to_world(gx, gy)
+                ddx = wx - self.position[0]
+                ddy = wy - self.position[1]
+                dnorm = float(np.hypot(ddx, ddy))
+                if dnorm < 1e-9:
+                    continue
+                ux, uy = ddx / dnorm, ddy / dnorm     # unit vector toward the cell
+                dist_w = 1.0 / cell_dist              # nearer cells pull harder
+                vx += novelty_w * dist_w * ux
+                vy += novelty_w * dist_w * uy
+                wsum += novelty_w * dist_w
+                bx += dist_w * ux                     # same geometry, flat novelty
+                by += dist_w * uy
+                bw += dist_w
+
+        if wsum < min_gap or bw < min_gap:
+            return None
+
+        # Subtract the geometric bias, scaled to the novelty weighting, so a uniform
+        # field (novelty_w constant) cancels exactly.
+        mean_nov = wsum / bw
+        vx -= mean_nov * bx
+        vy -= mean_nov * by
+
+        mag = float(np.hypot(vx, vy))
+        if mag < min_gap:
+            return None                                 # uniform surroundings: no gradient
+
+        abs_angle = float(np.arctan2(vy, vx))
+        rel_angle = abs_angle - self.heading
+        while rel_angle > np.pi:
+            rel_angle -= 2 * np.pi
+        while rel_angle < -np.pi:
+            rel_angle += 2 * np.pi
+
+        novelty = float(np.clip(mag / wsum, 0.0, 1.0))  # residual gradient strength, 0 = uniform
+        return (rel_angle, novelty)
 
     def nearest_landmark(self, category: str = None,
                          max_distance: float = None) -> Optional[str]:

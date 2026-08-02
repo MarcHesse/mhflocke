@@ -21,7 +21,7 @@ v0.5.1: Continuous topology scaling (Issue #142).
   - Hardware-matched sensor encoding (--hardware-sensors flag)
 """
 
-__version__ = "0.5.2"     # module version (MAJOR.MINOR; MAJOR = contract change)
+__version__ = "0.5.3"     # module version (MAJOR.MINOR; MAJOR = contract change)
 __logbook__ = 53          # mh-logbuch module entry
 __status__  = "active"     # active | veraltet | neu
 
@@ -678,9 +678,17 @@ class MuJoCoCreature:
         # via the reticulospinal tract, it doesn't compete with it.
         cpg_cmd = getattr(self, '_cpg_cmd', None)
         cpg_weight = getattr(self, '_cpg_weight', 0.0)
+        # Task #94 diagnosis: keep the SNN's own contribution before it is mixed with
+        # the CPG.  The CPG is damped by cpg_weight; `controls` (the SNN/cerebellar
+        # output) is added at FULL weight.  If the SNN has learned to trot straight --
+        # and it sees the IMU, so it can -- it will cancel any turn the CPG commands
+        # while leaving forward motion untouched.  That is exactly the signature we
+        # measure: gait matches the damped chain, steering does not.  Read-only.
+        self._dbg_snn_controls = list(controls)
         if cpg_cmd is not None and cpg_weight > 0:
             controls = [cpg * cpg_weight + cb
                        for cpg, cb in zip(cpg_cmd, controls)]
+        self._dbg_mixed_controls = list(controls)
 
         # Add reflex commands (emergency overrides)
         reflex_cmd = getattr(self, '_reflex_cmd', None)
@@ -728,6 +736,22 @@ class MuJoCoCreature:
             _urgency = max(0.0, min(1.0, (1.0 - _upright) / 2.0))
             scale = base_scale + (fallen_scale - base_scale) * _urgency
             target_q = standing + raw_ctrl * scale
+
+            # Task #92/#94: re-apply the PURE turning component UNDAMPED.
+            # raw_ctrl was damped by cpg_weight (mix) and by `scale` (amplitude), which
+            # together shrink a 7.41 deg/s turning gait to ~1 (measured, scripts/
+            # prove_motor_chain.py). The forward gait MUST stay damped for stability,
+            # but the turn is a steering command, not part of the base rhythm. The
+            # controller exposed the turn-only delta as _steer_delta (already a delta
+            # around the standing pose, so it adds straight onto target_q). Weight is
+            # tunable via _steer_undamped_weight; 0.0 => bit-identical (this whole block
+            # is skipped). Joint deltas only -> works on the real Bittle.
+            _steer_delta = getattr(self, '_steer_delta', None)
+            _steer_w = getattr(self, '_steer_undamped_weight', 0.0)
+            if _steer_delta is not None and _steer_w != 0.0:
+                _sd = np.asarray(_steer_delta, dtype=float)
+                if _sd.shape[0] >= n:
+                    target_q = target_q + _sd[:n] * _steer_w
             if pd.get('native_position', False):
                 # Position actuators: send target angles directly.
                 # raw_ctrl contains DELTAS from standing.

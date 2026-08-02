@@ -512,7 +512,7 @@ def inject_wall(xml_string: str, distance: float = 1.5,
     <!-- Wall obstacle: static barrier for obstacle avoidance (Issue #103) -->
     <geom name="wall_geom" type="box" pos="{distance:.3f} 0 {hz:.3f}"
           size="{hx:.3f} {hy:.3f} {hz:.3f}"
-          material="wall_mat" friction="1.0 0.5 0.01"
+          rgba="0.6 0.15 0.1 1" friction="1.0 0.5 0.01"
           conaffinity="1" contype="1" condim="3"/>"""
 
     # Inject material into <asset>
@@ -532,5 +532,14 @@ def inject_wall(xml_string: str, distance: float = 1.5,
     else:
         xml_string = xml_string.replace('</worldbody>', wall_xml + '\n  </worldbody>')
 
-    print(f'  Wall: injected at x={distance:.1f}m (w={width:.1f}m, h={height:.1f}m)')
+    if 'wall_geom' not in xml_string and '</mujoco>' in xml_string:
+        # Wrapper scene with <include> and no <worldbody>/floor here (Bittle
+        # scene_mhflocke.xml): the replaces above matched nothing. Add the wall in
+        # its own <worldbody> before </mujoco>; MuJoCo merges worldbodies across includes.
+        xml_string = xml_string.replace(
+            '</mujoco>', '  <worldbody>' + wall_xml + '\n  </worldbody>\n</mujoco>')
+    if 'wall_geom' in xml_string:
+        print(f'  Wall: injected at x={distance:.1f}m (w={width:.1f}m, h={height:.1f}m)')
+    else:
+        print('  Wall: NOT injected — no worldbody/floor/mujoco anchor found!')
     return xml_string

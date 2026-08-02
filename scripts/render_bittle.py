@@ -10,7 +10,7 @@ Usage:
     python scripts/render_bittle.py creatures/bittle/v043_.../training_log.bin --speed 3
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __logbook__ = 155
 
 import sys, os
@@ -240,9 +240,24 @@ def main():
         from src.body.terrain import inject_wall
         with open(xml_path) as xf:
             xml_string = xf.read()
-        xml_string = inject_wall(xml_string, distance=0.8)
-        model = mujoco.MjModel.from_xml_string(xml_string)
-        print(f'  Wall: injected at x=0.8m (visible in render)')
+        # Use the RUN's actual wall distance (real values or nothing): the wall
+        # must render where the robot actually met it, not a hardcoded 0.8 m, or
+        # the robot looks like it avoids empty space. Falls back to 0.8 only if the
+        # run did not override it (meta config wall_distance 0 = scene default).
+        _wall_d = float(flog.meta.get('config', {}).get('wall_distance', 0.0)) or 0.8
+        xml_string = inject_wall(xml_string, distance=_wall_d)
+        # Write a temp file NEXT TO the original (same as train_baby): the scene
+        # XML has <include file="bittle.xml"/> with a relative path, which
+        # from_xml_string cannot resolve (no base dir). from_xml_path on a temp
+        # file in the same directory resolves both the include and meshdir.
+        _temp_xml = os.path.join(os.path.dirname(xml_path), f'_render_temp_{os.getpid()}.xml')
+        with open(_temp_xml, 'w') as _tf:
+            _tf.write(xml_string)
+        try:
+            model = mujoco.MjModel.from_xml_path(_temp_xml)
+        finally:
+            os.remove(_temp_xml)
+        print(f'  Wall: injected at x={_wall_d:.2f}m (from FLOG meta, visible in render)')
     else:
         model = mujoco.MjModel.from_xml_path(xml_path)
     # Brighten for video — the flat-meadow scene has only two dim lights and no

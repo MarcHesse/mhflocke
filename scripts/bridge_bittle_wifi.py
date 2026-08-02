@@ -842,7 +842,7 @@ def run_gait_loop(bot, gait_name: str, duration: float, keep_balance: bool,
 
 def main():
     parser = argparse.ArgumentParser(description="Bittle WiFi/WebSocket test client")
-    parser.add_argument("--ip", required=True, help="Bittle IP, e.g. 192.168.2.131")
+    parser.add_argument("--ip", required=True, help="Bittle IP, e.g. 192.168.1.100")
     parser.add_argument("--port", type=int, default=81)
     parser.add_argument("--keep-balance", action="store_true",
                         help="Do NOT disable OpenCat balance (default: disable via 'gb').")

@@ -16,7 +16,7 @@ v0.5.0: Per-population Izhikevich (a,b,c,d) parameters + recovery variable u.
          Issue #106: Performance optimizations (torch.no_grad, pre-alloc).
 """
 
-__version__ = "0.5.2"     # module version (MAJOR.MINOR; MAJOR = contract change)
+__version__ = "0.5.3"     # module version (MAJOR.MINOR; MAJOR = contract change)
 __logbook__ = 22          # mh-logbuch module entry
 __status__  = "active"    # active | veraltet | neu
 
@@ -84,6 +84,57 @@ class SNNConfig:
     # Plasticity
     stdp_lr: float = 0.01
     surrogate_gradient: str = 'fast_sigmoid'
+
+    # Reward baseline (25./26.07.2026, Logbuch #215).
+    # apply_rstdp moduliert per Default mit dem ROHWERT des Lernsignals.
+    # GEMESSEN (Lauf v043_1785080567, Seed 42): der Modulator hat Mittel -0.10
+    # und ist nur zu 8,2 % positiv -- also naeherungsweise gleichfoermige
+    # ABSCHWAECHUNG. Grund: bei |PE| > 0.05 rechnet apply_rstdp
+    # 0.1 * R + 0.9 * (-PE); dieser Zweig dominiert, PE ist positiv.
+    # (Die urspruengliche Vermutung lautete umgekehrt ">90 % positiv, degeneriert
+    # zu Hebb'schem Potenzieren" -- das war im Vorzeichen falsch.)
+    # So oder so: ein Modulator mit zu 92 % gleichem Vorzeichen unterscheidet
+    # nicht zwischen Beitrag und Nicht-Beitrag. Der Docstring von apply_rstdp
+    # nennt die richtige Definition -- Dopamin kodiert "better than expected"
+    # (Schultz 1997) -- sie war nur nicht implementiert.
+    # reward_baseline=True zieht einen gleitenden Erwartungswert ab und macht den
+    # Modulator mittelwertfrei (gemessen: 47,6 % positiv, Streuung bleibt).
+    # Default False -> bit-identisch zum bisherigen Verhalten.
+    reward_baseline: bool = False
+    reward_baseline_alpha: float = 0.01   # EMA-Rate; 0.01 ~ Zeitkonstante 100 Updates
+
+    # Mischung Belohnung / Vorhersagefehler im Lernsignal (26.07.2026, #215).
+    # apply_rstdp rechnet bei |PE| > pe_threshold:
+    #     combined = (1 - pe_blend) * R + pe_blend * (-PE)
+    # GEMESSEN (v043_1785083780, Seed 42, 10k): Der PE-Zweig greift zu 98,7 % --
+    # der andere Zweig ist praktisch toter Code. |PE| liegt im Mittel bei 0.2004
+    # gegen eine Schwelle von 0.05, also viermal darueber; die Schwelle trennt
+    # nichts. Beitragsanteile am Betrag: R 29,2 %, PE 70,8 %.
+    # Folge: 0.9 * 0.2004 = 0.18 ist ein nahezu KONSTANTER negativer Sockel; das
+    # Lernsignal besteht aus diesem Sockel plus einer kleinen Schwankung, die
+    # ueberwiegend aus dem PE stammt und nicht aus den intrinsischen Antrieben.
+    # pe_blend senken => Neugier, Empowerment, Vestibulaer und Propriozeption
+    # bekommen mehr Gewicht im Lernen. Default 0.9 -> bit-identisch.
+    pe_blend: float = 0.9
+    pe_threshold: float = 0.05
+
+    # Eligibility-Trace (26.07.2026, #215).
+    # BEFUND: _trace_decay = 0.95 bediente ZWEI biologisch verschiedene Dinge --
+    #   (a) den STDP-Spurspeicher, also das KOINZIDENZFENSTER zwischen prae- und
+    #       postsynaptischem Spike (biologisch ~20 ms), und
+    #   (b) die ELIGIBILITY, also wie lange eine Koinzidenz auf Belohnung wartet
+    #       (biologisch 0,3-2 s, Dopamin-Fenster, Yagishita et al. 2014).
+    # Das sind zwei Groessenordnungen Unterschied an einer einzigen Konstante.
+    # Wer den Trace verlaengert, um Credit Assignment zu ermoeglichen, verbreitert
+    # zwangsläufig auch das Koinzidenzfenster und macht STDP unspezifisch.
+    # Bei 0.95 pro SNN-Schritt und --snn-substeps 10 ergibt das 0.60 pro
+    # Regelschritt, Halbwertszeit ~1,35 Regelschritte -- verzoegerte Belohnung ist
+    # damit strukturell nicht lernbar.
+    # eligibility_decay=None -> nimmt _trace_decay => bit-identisch.
+    # eligibility_consume: Faktor, mit dem die Eligibility nach jedem apply_rstdp
+    # verbraucht wird (bisher fest 0.3).
+    eligibility_decay: Optional[float] = None
+    eligibility_consume: float = 0.3
 
     # Neuromodulators
     neuromod_enabled: bool = True
@@ -166,6 +217,10 @@ class SNNController:
         self._pre_trace = self._trace
         self._post_trace = self._trace
         self._trace_decay = 0.95
+        # Eigene Zeitkonstante fuer die Eligibility (siehe SNNConfig).
+        # None => identisch zum Spurspeicher => bit-identisch zum alten Verhalten.
+        _ed = getattr(config, 'eligibility_decay', None)
+        self._elig_decay = self._trace_decay if _ed is None else float(_ed)
         self._eligibility = torch.zeros(1, device=self.device, dtype=self.dtype)
 
         # --- Connectivity ---
@@ -180,6 +235,19 @@ class SNNController:
         # --- Homeostatic Plasticity ---
         self._spike_count_window = torch.zeros(n, device=self.device, dtype=self.dtype)
         self._homeostatic_step_count = 0
+        self._last_rate_err_mean = 0.0
+        self._last_rate_err_max = 0.0
+        self._last_adapt_mean = 0.0
+        self._last_adapt_max = 0.0
+        self._homeo_updates = 0
+        # Erwartungswert der Belohnung (siehe SNNConfig.reward_baseline).
+        self._reward_ema = 0.0
+        self._last_modulator = 0.0
+        self._rstdp_calls = 0
+        self._pe_branch_hits = 0
+        self._last_pe = 0.0
+        self._last_reward_in = 0.0
+        self._last_combined = 0.0
         self._thresholds = torch.full((n,), config.v_threshold, device=self.device, dtype=self.dtype)
 
         # --- Astrocyte Gate ---
@@ -474,7 +542,9 @@ class SNNController:
             # d_elig = spike[pre] * trace[post] - spike[post] * trace[pre]
             d_elig = (sf[pre_idx] * self._trace[post_idx] -
                       sf[post_idx] * self._trace[pre_idx])
-            self._eligibility.mul_(self._trace_decay).add_(d_elig)
+            # Eigene Zeitkonstante: die Eligibility wartet auf Belohnung, der
+            # Spurspeicher oben misst Koinzidenz. Zwei Rollen, zwei Konstanten.
+            self._eligibility.mul_(self._elig_decay).add_(d_elig)
 
         # 8. Spike count for homeostasis — reuse sf
         self._spike_count_window.add_(sf)
@@ -525,7 +595,7 @@ class SNNController:
             post_idx = self._weight_indices[1]
             d_elig = (sf[pre_idx] * self._trace[post_idx] -
                       sf[post_idx] * self._trace[pre_idx])
-            self._eligibility.mul_(self._trace_decay).add_(d_elig)
+            self._eligibility.mul_(self._elig_decay).add_(d_elig)
 
     # ========================================================================
     # PLASTICITY
@@ -552,11 +622,36 @@ class SNNController:
             lr = lr * (1.0 + ach)
 
         elig_clipped = self._eligibility.clamp(-1.0, 1.0)
-        if abs(prediction_error) > 0.05:
-            combined_signal = 0.1 * reward_signal + 0.9 * (-prediction_error)
+        _thr = getattr(self.config, 'pe_threshold', 0.05)
+        _w = getattr(self.config, 'pe_blend', 0.9)
+        if abs(prediction_error) > _thr:
+            combined_signal = (1.0 - _w) * reward_signal + _w * (-prediction_error)
+            self._pe_branch_hits += 1
         else:
             combined_signal = reward_signal
-        dw = lr * combined_signal * elig_clipped
+        # Anteile getrennt festhalten (26.07.2026): Wenn der PE-Zweig fast immer
+        # greift, bestimmt die intrinsische Belohnung das Lernen nur zu 10 %.
+        # Der PE hier ist der ARGUMENTWERT von apply_rstdp -- nicht zwingend
+        # dasselbe wie das FLOG-Feld 'pred_error' aus dem Forward-Modell.
+        self._last_pe = float(prediction_error)
+        self._last_reward_in = float(reward_signal)
+        self._last_combined = float(combined_signal)
+
+        # Schultz 1997: Dopamin kodiert die ABWEICHUNG von der Erwartung, nicht
+        # den Rohwert. Ohne diesen Abzug ist der Modulator >90 % der Zeit positiv
+        # und dw damit fast immer positiv -- verstaerkt wird alles, was aktiv war.
+        # Mit Abzug wird der Modulator mittelwertfrei: besser als erwartet
+        # verstaerkt, schlechter als erwartet schwaecht ab.
+        if self.config.reward_baseline:
+            modulator = combined_signal - self._reward_ema
+            a = self.config.reward_baseline_alpha
+            self._reward_ema += a * (combined_signal - self._reward_ema)
+        else:
+            modulator = combined_signal
+        self._last_modulator = float(modulator)
+        self._rstdp_calls += 1
+
+        dw = lr * modulator * elig_clipped
         dw = dw.clamp(-0.05, 0.05)
 
         if self.protected_populations:
@@ -572,7 +667,7 @@ class SNNController:
             self._weight_values.clamp(min=-1.0, max=0.0)
         )
 
-        self._eligibility *= 0.3
+        self._eligibility *= getattr(self.config, 'eligibility_consume', 0.3)
 
         # Update weight representation — mark dirty, rebuild lazily in next forward()
         self._dense_weights_dirty = True
@@ -634,6 +729,17 @@ class SNNController:
 
         self._thresholds = self._thresholds + adaptation
         self._thresholds = self._thresholds.clamp(min=0.3, max=3.0)
+
+        # Selbstauskunft des Reglers (25.07.2026). Der gemessene Schwellenanstieg
+        # in der Anfangsphase eines Laufes ist rund 6x schneller, als adaptation =
+        # 0.01 * rate_error zulaesst (max 0.0095 pro Intervall, und das nur bei
+        # Feuerrate 1.0). Die Plateauphase passt dagegen exakt zur Regel. Statt das
+        # weiter zu erschliessen: aufzeichnen, was hier tatsaechlich angewandt wird.
+        self._last_rate_err_mean = float(rate_error.mean())
+        self._last_rate_err_max = float(rate_error.max())
+        self._last_adapt_mean = float(adaptation.mean())
+        self._last_adapt_max = float(adaptation.abs().max())
+        self._homeo_updates += 1
 
         self._spike_count_window.zero_()
         self._homeostatic_step_count = 0
@@ -730,6 +836,66 @@ class SNNController:
     # ========================================================================
     # MONITORING
     # ========================================================================
+
+    def get_health(self) -> Dict:
+        """Cheap scalar health snapshot of the substrate. Read-only, no side effects.
+
+        Added 2026-07-25 (Logbuch #214). Firing rates were computed nowhere in the
+        training loop and logged nowhere at all -- so a network in which 30-74 %% of
+        the neurons were silent stayed invisible across every run. R-STDP needs
+        coincidence and coincidence needs spikes; without this the substrate's
+        state cannot be seen while working on the reward.
+
+        Unlike get_state() this returns SCALARS only and skips the neuromodulator
+        and tau bookkeeping, so it is cheap enough to call at FLOG cadence.
+
+        Caveat: _spike_count_window is zeroed after every homeostatic interval, so
+        the window is short right after a reset. 'window' is returned for exactly
+        that reason -- at a small window the rates are noise.
+        """
+        w = self._homeostatic_step_count
+        if w <= 0:
+            return {'snn_rate_mean': 0.0, 'snn_rate_med': 0.0, 'snn_silent_frac': 0.0,
+                    'snn_sat_frac': 0.0, 'snn_thr_med': float(self._thresholds.median()),
+                    'snn_rate_window': 0}
+        rates = self._spike_count_window / float(w)
+        n = rates.numel()
+        # Quantile statt nur Median: die Schwellen bilden wenige diskrete Cluster
+        # (gemessen 25.07.: 4 Werte auf 535 Neuronen). Ein Median ueber eine solche
+        # Verteilung SPRINGT, sobald ein Cluster die 50-%-Marke passiert -- er
+        # verfolgt keine Population. Wer nur den Median loggt, liest Cluster-
+        # Wechsel als Schwellenanstieg. Die Spannweite macht das unterscheidbar.
+        thr = self._thresholds
+        q = torch.quantile(thr.float(),
+                           torch.tensor([0.1, 0.5, 0.9], device=thr.device))
+        return {
+            'snn_rate_mean': float(rates.mean()),
+            'snn_rate_med': float(rates.median()),
+            'snn_silent_frac': float((rates <= 0).sum()) / n,
+            'snn_sat_frac': float((rates > 0.9).sum()) / n,
+            'snn_thr_med': float(q[1]),
+            'snn_thr_p10': float(q[0]),
+            'snn_thr_p90': float(q[2]),
+            'snn_thr_uniq': int(torch.unique(thr).numel()),
+            'snn_rate_window': int(w),
+            # Selbstauskunft des Reglers -- siehe _homeostatic_update
+            'snn_homeo_n': int(getattr(self, '_homeo_updates', 0)),
+            'snn_err_mean': float(getattr(self, '_last_rate_err_mean', 0.0)),
+            'snn_err_max': float(getattr(self, '_last_rate_err_max', 0.0)),
+            'snn_adapt_mean': float(getattr(self, '_last_adapt_mean', 0.0)),
+            'snn_adapt_max': float(getattr(self, '_last_adapt_max', 0.0)),
+            # Belohnungs-Baseline (Schultz): was WIRKLICH ins dw geht
+            'snn_reward_ema': float(getattr(self, '_reward_ema', 0.0)),
+            'snn_modulator': float(getattr(self, '_last_modulator', 0.0)),
+            'snn_baseline_on': int(bool(getattr(self.config, 'reward_baseline', False))),
+            # Welcher Zweig formt das Lernen? (siehe apply_rstdp)
+            'snn_rstdp_calls': int(getattr(self, '_rstdp_calls', 0)),
+            'snn_pe_branch_hits': int(getattr(self, '_pe_branch_hits', 0)),
+            'snn_pe_in': float(getattr(self, '_last_pe', 0.0)),
+            'snn_reward_in': float(getattr(self, '_last_reward_in', 0.0)),
+            'snn_combined': float(getattr(self, '_last_combined', 0.0)),
+            'snn_pe_blend': float(getattr(self.config, 'pe_blend', 0.9)),
+        }
 
     def get_state(self) -> Dict:
         """Return current network state."""

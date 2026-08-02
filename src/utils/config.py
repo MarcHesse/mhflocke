@@ -34,8 +34,6 @@ VECTORS_DIR = "data/vectors"
 # FTP SYNCHRONIZATION
 # ============================================================
 
-# All FTP settings come from the environment / .env (no host or account path
-# hardcoded). Leave FTP_HOST empty to keep sync disabled.
 FTP_HOST = os.environ.get('FTP_HOST', '')
 FTP_PORT = int(os.environ.get('FTP_PORT', '21'))
 FTP_USER = os.environ.get('FTP_USER', '')

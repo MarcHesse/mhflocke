@@ -13,7 +13,7 @@ pattern generator, embodied emotions, and reward-modulated spike-timing-dependen
 SNN + cerebellum learn to refine it on top — closer to how a young animal's brainstem and
 spinal cord come pre-wired while the cerebellum and cortex calibrate them with experience.
 
-> **This `main` branch is the Bittle-only public release (v0.8.1).** The active hardware
+> **This `main` branch is the Bittle-only public release (v0.8.2).** The active hardware
 > platform is the [Petoi Bittle X](https://www.petoi.com/products/petoi-bittle-x). Earlier
 > platforms (Unitree Go2 ablation, Freenove sim-to-real) are preserved as paper checkpoints —
 > see the tags below.
@@ -100,6 +100,19 @@ python flog_server.py
 - PyTorch
 - NumPy, msgpack
 
+### Check that it runs
+
+One command runs every entry point once — two short training runs, the log check, the four
+analyses, the renderers, the dashboard server — and reports what worked:
+
+```bash
+python scripts/smoke_test_release.py --steps 300 --skip-render   # ~5 min
+python scripts/smoke_test_release.py                             # everything, slower
+```
+
+A PASS means the code runs on your machine. It says nothing about whether a run learned
+anything — that is what the analysis tools below are for.
+
 ## Hardware — Petoi Bittle X
 
 MH-FLOCKE targets the [Petoi Bittle X](https://www.petoi.com/products/petoi-bittle-x)
@@ -182,6 +195,35 @@ python flog_server.py
 
 Features: distance/velocity charts, fall detection, CPG/actor weight tracking, cerebellar
 prediction error, behavioural state timeline.
+
+## Looking at the substrate (v0.8.2)
+
+The training log carries the state of the spiking network itself, not just the behaviour it
+produces — firing rates, threshold quantiles, the silent and saturated fractions, and the parts
+the learning signal is assembled from. Without this a network in which a large share of neurons
+never fires looks the same from the outside as one that is learning: R-STDP needs coincidences,
+and coincidences need spikes.
+
+```bash
+# Substrate over the course of a run: firing rates, threshold quantiles
+python scripts/analyze_substrate_health.py creatures/bittle/<run>/training_log.bin
+
+# What the learning signal is actually made of: reward vs. prediction error, modulator spread
+python scripts/analyze_reward_gradient.py creatures/bittle/<run>/training_log.bin
+
+# Thresholds and weight distribution from a saved network, without running training
+python scripts/diagnose_homeostasis.py creatures/bittle/<run>/snn_state.pt
+
+# Path length vs. straight-line distance, speed over time
+python scripts/analyze_locomotion.py creatures/bittle/<run>/training_log.bin
+```
+
+On the default settings the learning signal is dominated by the prediction-error branch: it is
+taken in 98.7 % of steps (seed 42), leaving the reward term `1 - pe_blend` = 10 % of the signal,
+and without a baseline the modulator carries the same sign in 92 % of steps. Four flags on
+`train_baby.py` change this — `--reward-baseline`, `--pe-blend`, `--eligibility-decay`,
+`--eligibility-consume` — and all of them default to the previous behaviour. The field list is
+in `docs/FLOG_FORMAT.md`.
 
 ## Video Rendering
 

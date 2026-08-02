@@ -106,10 +106,11 @@ class MotivationalDrives:
         boredom = max(0, 0.5 - pe * 5)  # Niedrige PE → Langeweile
         # v0.7.0: Low explored ratio → more exploration drive (terra incognita!)
         explored = state.get('spatial_explored', 0.0)
+        coord = state.get('coordination', 0.0)  # Increment b (#209 fix): coordination satisfies the explore drive
         terra_incognita = max(0, 0.3 - explored * 0.5)  # 0% explored → +0.3
         self.state.exploration = (
             self.DECAY * self.state.exploration +
-            (1 - self.DECAY) * np.clip(self.BASELINES['exploration'] + boredom + terra_incognita, 0, 1)
+            (1 - self.DECAY) * np.clip(self.BASELINES['exploration'] + boredom + terra_incognita - coord, 0, 1)
         )
         
         # === COMFORT: High when energy spent ===

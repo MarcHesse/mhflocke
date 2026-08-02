@@ -2,6 +2,141 @@
 
 All notable changes to MH-FLOCKE. Dates are YYYY-MM-DD.
 
+## v0.8.2 — Substrate telemetry and learning-signal controls (2026-08-02)
+
+The R-STDP learning signal was a single opaque number: when a run learned badly there was no
+way to tell a bad gait from a substrate that had gone silent, saturated or drifted. This
+release makes the substrate observable and the signal itself configurable. Every new flag
+defaults to what the previous version did, and a regression run is bit-identical.
+
+What the telemetry showed on the default settings, measured on a 20,000-step run: the
+prediction-error branch of `apply_rstdp` is taken in 98.7 % of steps, so the reward term
+contributes only `1 - pe_blend` = 10 % of the learning signal, and the threshold that is
+supposed to select between the two branches separates nothing (mean |PE| is 0.204 against a
+threshold of 0.05). Without the baseline the modulator is positive in 6.9 % of steps — a signal
+with the same sign almost everywhere cannot distinguish a synapse that contributed from one that
+did not. The new flags exist to change that; the defaults do not.
+
+### Learning-signal controls (`scripts/train_baby.py` → 0.8.3)
+- `--reward-baseline` / `--reward-baseline-alpha` — modulate with `R - E[R]` instead of the raw
+  reward (Schultz 1997).
+- `--pe-blend` — weight of the prediction error in the learning signal,
+  `combined = (1-w)·R + w·(-PE)`. Default 0.9, which is the previous behaviour.
+- `--eligibility-decay` — separate time constant for the eligibility trace. Default `None`
+  keeps it tied to the STDP trace (0.95).
+- `--eligibility-consume` — consumption factor after each `apply_rstdp`. Default 0.3.
+
+### Substrate telemetry in the training log
+Firing rates, threshold quantiles, silent and saturated fractions, homeostasis counts, error
+and adaptation magnitudes, the reward baseline, and the split of the learning signal into its
+reward and prediction-error parts are now written per logged step. The `snn_*` group in
+`docs/FLOG_FORMAT.md` (doc version 1.4) lists them. No format change — these are optional keys,
+older readers ignore them and older logs show a missing field as `—`.
+
+### SNN controller (`src/brain/snn_controller.py` → 0.5.3)
+- `get_health()` — controller self-report.
+- Reward baseline and configurable PE/R mixing.
+- Eligibility trace separated from the STDP trace, with its own decay and consumption.
+
+### New analysis entry points
+- `scripts/diagnose_homeostasis.py` — threshold distribution and weight growth from a saved
+  `snn_state.pt`, without running training. Reports how much of the threshold range sits at the
+  upper clamp, i.e. whether the homeostatic controller has run out of room.
+- `scripts/analyze_substrate_health.py` — firing rates and threshold quantiles over time.
+- `scripts/analyze_reward_gradient.py` — spread and structure of the learning signal.
+- `scripts/analyze_locomotion.py` — path length vs. straight-line distance, speed over time.
+- `scripts/smoke_test_release.py` — runs every entry point in the release once, in order: two
+  short training runs (one with the new flags), the log check, the four analyses, the renderers
+  and sonification, the dashboard server, and the hardware bridge's imports. It verifies that
+  the new flags demonstrably change the modulator rather than just being accepted, and scans
+  every output for leftover German text and private paths. A PASS means the release runs, not
+  that a run learned anything.
+
+### Fixed
+- `--resume` crashed on a forward reference while restoring the spatial map (#231).
+
+### What the new instrumentation shows
+
+These are open findings, not fixes. They are listed because the tools exist to make them
+visible, and because a run that looks healthy from the outside can be none of these things:
+
+- **The threshold homeostasis is asymmetric.** `rate_error = actual - target` with a target of
+  0.05 reaches +0.95 upward but only −0.05 downward, since a firing rate cannot go negative — a
+  19:1 ratio. The controller corrects overactivity quickly and underactivity barely, so its
+  fixed point sits below the target.
+- **On the Bittle it does not correct at all.** `_homeostatic_update` zeroes its adjustment for
+  Izhikevich neurons, and every Bittle population is Izhikevich — so the rate homeostasis is
+  inert by construction. Measured over a 20,000-step run: the controller ran 1001 update cycles,
+  reported a rate error of −0.039 throughout, and applied exactly 0.000000 every time. The
+  firing rate sat at 0.005 against a target of 0.05, with 28–35 % of neurons silent. The
+  thresholds still rose from 0.50 to 1.58 over the run, but that is `cerebellar_learning.py`
+  writing granule-cell thresholds directly, not the homeostasis. `analyze_substrate_health.py`
+  now reports this case explicitly instead of comparing the movement against a rule that was
+  never applied.
+- **The learning signal has a gradient; the modulator does not.** A first reading was that the
+  intrinsic reward is close to constant on flat ground and therefore shapes nothing. Measured on
+  a 20,000-step run, that is wrong: R has a coefficient of variation of 0.64 and a lag-one
+  autocorrelation of 0.9965 — plenty of spread, and structure rather than noise. The problem is
+  one stage later. What actually multiplies into the weight update is positive in only 6.9 % of
+  steps, so in 93 % of steps it carries the same sign and cannot distinguish a synapse that
+  contributed from one that did not. `--reward-baseline` addresses exactly this and is off by
+  default.
+- **Speed is not rewarded.** `corr(v, R) = +0.065` over the same run — walking faster does not
+  make the reward better, which is consistent with a speed that stays flat.
+- **The prediction-error branch is not a branch.** Independently reproduced on that run: the PE
+  path is taken in 98.7 % of `apply_rstdp` calls, mean |PE| is 0.204 against a threshold of
+  0.05, and the contributions split 29.6 % reward to 70.4 % prediction error. The threshold
+  separates nothing and the reward-only path is effectively dead code.
+- **Consistent with that, speed does not improve over a long run.** Measured on a 20,000-step
+  flat run: 0.068 m/s in the first tenth, then 0.050–0.054 m/s for the remaining nine, with no
+  upward trend. Nothing in the reward rewards being faster, and the robot does not get faster.
+- **Two suspicions did not survive the measurement.** The concern that unchecked weight growth
+  drives the thresholds into their upper clamp, leaving the short eligibility trace as the only
+  brake, is not supported: on a 20,000-step network no threshold sits at either clamp and 90.9 %
+  of weights lie between the bounds rather than pinned at them. Nor is the network saturated —
+  the opposite: 0 % of neurons fire above 0.9, 28.6 % do not fire at all, the median rate is
+  0.005 against a target of 0.05, and only 15 of 535 neurons sit in the target band.
+- **Purkinje cells do not fire.** Over a 20,000-step run not one of the 16 Purkinje neurons
+  spiked; over a 500-step run neither Purkinje nor DCN did. Every other population fires
+  (input 19/19, Golgi 49/49, motor hidden 141/141, output 16/16, granule 172/278). Purkinje
+  cells are the sole output of the cerebellar cortex, so this concerns the stage where
+  Marr-Albus-Ito learning is supposed to take effect — while in the same run the parallel-fibre
+  to Purkinje weight grew from 0.10 to 0.44. Whether the cerebellar correction is therefore
+  inert depends on whether `cerebellar_learning` works on spikes or on membrane potential, which
+  is not yet established. `check_flog.py` now reports this; the previous version passed it
+  silently.
+- **Distance figures need reading carefully.** "Max distance" does not distinguish walking in a
+  circle from walking in a straight line. `analyze_locomotion.py` reports path length against
+  straight-line displacement so the two cases can be told apart. On the same 20,000-step run:
+  2.161 m of path for 1.039 m of displacement, a straightness of 0.48 — about half the distance
+  walked goes sideways, and the lateral offset drifts steadily in one direction rather than
+  oscillating.
+
+### Also in this release
+
+Modules that grew alongside the work since v0.8.1 and are shipped here without being broken out
+individually: `mujoco_creature.py`, `mujoco_world.py`, `opencat_controller.py`, `terrain.py`,
+`curiosity.py`, `spatial_map.py`, `drives.py`, `cognitive_brain.py`, `config.py`. The bulk of
+`train_baby.py`'s diff is likewise wider than the flags described above. These were not tracked
+change by change, so this entry names them rather than claiming a completeness it does not have.
+
+- `scripts/render_bittle.py` → 0.1.1: the wall is drawn at the distance the run actually used,
+  read from the log's meta, instead of a hardcoded 0.8 m — otherwise the robot appears to avoid
+  empty space. The temporary scene XML is now written next to the original so the relative
+  `<include>` and `meshdir` still resolve.
+
+### Build
+- `scripts/check_flog.py` → 0.2.0: per-population spike coverage is now counted over the whole
+  run instead of the first frame. A first-frame count says nothing at a target rate of 0.05,
+  where most neurons are silent in any given step — it read as if a population never fired. A
+  population that stays silent for an entire run is now a WARN.
+- The manifest generator now carries the version as a constant, lists `check_flog.py` as an
+  entry point, and pins the two static HTML assets (`flog_dashboard.html`, `bridge_live.html`).
+  All three had to be patched in by hand before, and the HTML files dropped out on every
+  rebuild — the reason for the two hotfixes after v0.8.0.
+
+---
+
 ## v0.8.1 — Real data in the video dashboard overlay (2026-06-20)
 
 A few readouts in the rendered dashboard overlay were still placeholders, shown for
