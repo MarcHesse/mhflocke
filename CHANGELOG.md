@@ -2,6 +2,55 @@
 
 All notable changes to MH-FLOCKE. Dates are YYYY-MM-DD.
 
+## v0.8.2.2 — The Bittle's head is solid (2026-09-03)
+
+One change to `creatures/bittle/bittle.xml`, and it alters the physics: anything that measures
+how close the robot gets to an obstacle reads differently after this release, and results
+recorded before it are not comparable with later ones.
+
+`jaw_1` and `head__1` carried `class="visual"` geometry only. The snout therefore passed
+straight through walls while the body was stopped by whatever came next behind it — and in the
+stand pose that was a front shank, not the chest. Both bodies now carry a matching
+`class="collision"` geom on the same mesh and position.
+
+Measured by sweeping the body towards a wall face at 0.250 m in 1 mm steps and asking MuJoCo
+who touches first: `head__1` at a torso origin of 0.148 m, `jaw_1` at 0.153, the front shanks at
+0.182, the torso at 0.187. The head reaches 34 mm further forward than any other part, and until
+now none of that reach existed physically. A head-on approach stops that much earlier.
+
+The reach depends on the neck. `neck_joint` is unactuated but not fixed: it swings within its
+±0.5 rad limits, and its axis is tilted, so turning the head also moves the snout fore and aft.
+Swept against the same wall the head reaches 102.0 mm ahead of the torso origin at −0.48 rad,
+96.0 mm at 0 and 84.0 mm at +0.5 — an 18 mm spread. The figures above are quoted at −0.48 rad,
+which is what the `stand` keyframe sets and also close to the maximum.
+
+`c_neck__1` and `servo_neck__1` deliberately stay visual-only. They sit within the torso
+silhouette and are not the contact point, and collision geometry there risks standing contacts
+against `cover_1` and `front__1`, which are grandparent pairs and therefore not removed by
+`filterparent`.
+
+Verified before release: no self-contact in the stand pose or over 2000 free steps; settling
+unchanged at −13.0 mm; a 10,000-step regression on `scene flat` identical in every reported
+metric with and without the geoms; open-loop trot and the pose sequence clean in the viewer;
+recovery from supine still rights the body, with the head touching the floor three times during
+the roll without blocking it.
+
+In sync with the standalone model repository at `github.com/MarcHesse/bittle-mujoco`.
+
+## v0.8.2.1 — Bittle joint limits widened to the hardware's range (2026-08-22)
+
+Shoulder limits go from ±1.5708/1.6 rad to ±2.6, knees from 1.5708 to 2.6 at the upper end, and
+the actuator `ctrlrange` from ±1.57 to ±2.6. This is required for OpenCat's own recovery skill
+(`rc`), which the firmware runs on `IMU_EXCEPTION_FLIPPED`: its roll phase swings the legs flat
+out to one side, well past ±90°, to lever the chassis over. With the narrower limits the model
+could not reproduce it and the robot stayed on its back.
+
+Gaits are unaffected — the gait tables never approach either limit. The limits are not a
+measurement of where the physical linkage collides; they are what the firmware asks for.
+
+In use in development since 2026-08-22 and only now reaching this repository. In sync with
+`github.com/MarcHesse/bittle-mujoco`.
+
 ## v0.8.2 — Substrate telemetry and learning-signal controls (2026-08-02)
 
 The R-STDP learning signal was a single opaque number: when a run learned badly there was no

@@ -34,6 +34,30 @@
      Note: neck_joint exists but is not actuated.
      NOTE: brain input stays IMU + proprioception + CPG only (#59); framepos/
      velocimeter/touch are sim-only trainer ground-truth, never fed to the SNN.
+
+     HEAD COLLISION (2026-09-03). jaw_1 and head__1 carry collision geoms.
+     Until this date the whole head chain was class="visual" only: the snout
+     passed through obstacles while the body was stopped by the front shanks.
+     Measured against a wall face at 0.250 m -- head__1 touches with the torso
+     origin at 0.148 m, jaw_1 at 0.153, front shanks at 0.182, torso at 0.187,
+     so the head reaches 34 mm further forward than anything else.
+     c_neck__1 and servo_neck__1 stay visual-only: inside the torso silhouette,
+     not the contact point, and collision geoms there would risk standing
+     contacts against cover_1 / front__1, which are grandparent pairs and
+     therefore NOT removed by filterparent.
+     Verified: no self-contact in the stand pose or over 2000 free steps;
+     settling unchanged at dz -13.0 mm; 10k regression on scene flat identical
+     in every reported metric.
+     THE REACH DEPENDS ON THE NECK. neck_joint is unactuated but not fixed: it
+     swings within its +-0.5 rad limits, and its axis is tilted (-0.5 0 -0.866),
+     so turning the head also moves the snout fore and aft. Swept against the same
+     wall face the head reaches 102.0 mm ahead of the torso origin at -0.48 rad,
+     96.0 mm at 0 and 84.0 mm at +0.5 -- an 18 mm spread. The figures above are
+     quoted at -0.48, which is what the stand keyframe sets and also close to the
+     maximum.
+     THIS CHANGES THE PHYSICS: wall-distance results up to and including
+     30.08.2026 are not comparable with later ones.
+     In sync with the upstream bittle-mujoco model repo as of 03.09.2026.
 -->
 <mujoco model="bittle">
   <compiler angle="radian" meshdir="meshes_obj" autolimits="true" inertiafromgeom="false"/>
@@ -48,7 +72,7 @@
     <default class="collision">
       <geom condim="3" contype="1" conaffinity="15" friction="0.9 0.02 0.01" group="1" rgba="0.5 0.5 0.5 0.5"/>
     </default>
-    <position ctrllimited="true" ctrlrange="-1.57 1.57" kp="40.0"/>
+    <position ctrllimited="true" ctrlrange="-2.6 2.6" kp="40.0"/>
     <mesh scale="0.001 0.001 0.001"/>
   </default>
 
@@ -158,9 +182,11 @@
           <body name="jaw_1" pos="0.016896 -0.012925 -0.001914">
             <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
             <geom pos="-0.06445 0.012925 -0.034027" type="mesh" mesh="jaw_1" class="visual" material="bittle_blue"/>
+            <geom pos="-0.06445 0.012925 -0.034027" type="mesh" mesh="jaw_1" class="collision"/>
             <body name="head__1" pos="-0.008739 -0.00423 0.0263">
               <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
               <geom pos="-0.055711 0.017155 -0.060327" type="mesh" mesh="head__1" class="visual" material="head_yellow"/>
+              <geom pos="-0.055711 0.017155 -0.060327" type="mesh" mesh="head__1" class="collision"/>
             </body>
           </body>
         </body>
@@ -171,7 +197,7 @@
         <inertial pos="0 0 0" mass="0.0107" diaginertia="9e-7 1.2e-6 6e-7"/>
         <geom pos="-0.059645 0.036 -0.017875" type="mesh" mesh="servo_rfs_1" class="visual" material="bittle_black"/>
         <body name="c_thrf__1" pos="-0.007145 -0.0125 0.004125">
-          <joint name="shrfs_joint" pos="0 0 0" axis="0 1 0" range="-1.5708 1.6"/>
+          <joint name="shrfs_joint" pos="0 0 0" axis="0 1 0" range="-2.6 2.6"/>
           <inertial pos="-0.02 0 -0.01" mass="0.006" diaginertia="0.0000011 0.0000022 0.0000022"/>
           <geom pos="-0.0525 0.0485 -0.022" type="mesh" mesh="c_thrf__1" class="visual" material="bittle_red"/>
           <geom pos="-0.0525 0.0485 -0.022" type="mesh" mesh="c_thrf__1" class="collision"/>
@@ -185,7 +211,7 @@
                 <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
                 <geom pos="-0.008067 0.054937 -0.010094" type="mesh" mesh="c_thorf_1" class="visual" material="bittle_red"/>
                 <body name="servos_rf_1" pos="0 0.007857 0">
-                  <joint name="shrft_joint" pos="0 0 0" axis="0 1 0" range="-1.22173 1.5708"/>
+                  <joint name="shrft_joint" pos="0 0 0" axis="0 1 0" range="-1.22173 2.6"/>
                   <inertial pos="-0.004 0.02 -0.005" mass="0.0107" diaginertia="9e-7 1.2e-6 6e-7"/>
                   <geom pos="-0.008067 0.04708 -0.010094" type="mesh" mesh="servos_rf_1" class="visual" material="bittle_black"/>
                   <geom pos="-0.008067 0.04708 -0.010094" type="mesh" mesh="servos_rf_1" class="collision"/>
@@ -211,7 +237,7 @@
         <inertial pos="0 0 0" mass="0.0107" diaginertia="9e-7 1.2e-6 6e-7"/>
         <geom pos="0.059645 0.036 -0.017875" type="mesh" mesh="servo_rrs__1" class="visual" material="bittle_black"/>
         <body name="c_thrr_1" pos="0.007145 -0.0125 0.004125">
-          <joint name="shrrs_joint" pos="0 0 0" axis="0 -1 0" range="-1.5708 1.6"/>
+          <joint name="shrrs_joint" pos="0 0 0" axis="0 -1 0" range="-2.6 2.6"/>
           <inertial pos="0.02 0 -0.01" mass="0.006" diaginertia="0.0000011 0.0000022 0.0000022"/>
           <geom pos="0.0525 0.0485 -0.022" type="mesh" mesh="c_thrr_1" class="visual" material="bittle_red"/>
           <geom pos="0.0525 0.0485 -0.022" type="mesh" mesh="c_thrr_1" class="collision"/>
@@ -225,7 +251,7 @@
                 <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
                 <geom pos="0.096933 0.054937 -0.010094" type="mesh" mesh="c_thorr_1" class="visual" material="bittle_red"/>
                 <body name="servos_rr_1" pos="0 0.007857 0">
-                  <joint name="shrrt_joint" pos="0 0 0" axis="0 1 0" range="-1.22173 1.5708"/>
+                  <joint name="shrrt_joint" pos="0 0 0" axis="0 1 0" range="-1.22173 2.6"/>
                   <inertial pos="0.05 0.02 -0.005" mass="0.0107" diaginertia="9e-7 1.2e-6 6e-7"/>
                   <geom pos="0.096933 0.04708 -0.010094" type="mesh" mesh="servos_rr_1" class="visual" material="bittle_black"/>
                   <geom pos="0.096933 0.04708 -0.010094" type="mesh" mesh="servos_rr_1" class="collision"/>
@@ -251,7 +277,7 @@
         <inertial pos="0 0 0" mass="0.0107" diaginertia="9e-7 1.2e-6 6e-7"/>
         <geom pos="-0.059645 -0.036 -0.017875" type="mesh" mesh="servo_lfs_1" class="visual" material="bittle_black"/>
         <body name="c_thlf_1" pos="-0.007145 0.0125 0.004125">
-          <joint name="shlfs_joint" pos="0 0 0" axis="0 1 0" range="-1.5708 1.6"/>
+          <joint name="shlfs_joint" pos="0 0 0" axis="0 1 0" range="-2.6 2.6"/>
           <inertial pos="-0.02 0 -0.01" mass="0.006" diaginertia="0.0000011 0.0000022 0.0000022"/>
           <geom pos="-0.0525 -0.0485 -0.022" type="mesh" mesh="c_thlf_1" class="visual" material="bittle_red"/>
           <geom pos="-0.0525 -0.0485 -0.022" type="mesh" mesh="c_thlf_1" class="collision"/>
@@ -265,7 +291,7 @@
                 <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
                 <geom pos="-0.008067 -0.054937 -0.010094" type="mesh" mesh="c_tholf_1" class="visual" material="bittle_red"/>
                 <body name="servos_lf_1" pos="0 -0.007857 0">
-                  <joint name="shlft_joint" pos="0 0 0" axis="0 1 0" range="-1.22173 1.5708"/>
+                  <joint name="shlft_joint" pos="0 0 0" axis="0 1 0" range="-1.22173 2.6"/>
                   <inertial pos="-0.004 -0.02 -0.005" mass="0.0107" diaginertia="9e-7 1.2e-6 6e-7"/>
                   <geom pos="-0.008067 -0.04708 -0.010094" type="mesh" mesh="servos_lf_1" class="visual" material="bittle_black"/>
                   <geom pos="-0.008067 -0.04708 -0.010094" type="mesh" mesh="servos_lf_1" class="collision"/>
@@ -291,7 +317,7 @@
         <inertial pos="0 0 0" mass="0.0107" diaginertia="9e-7 1.2e-6 6e-7"/>
         <geom pos="0.059645 -0.036 -0.017875" type="mesh" mesh="servo_lrs__1" class="visual" material="bittle_black"/>
         <body name="c_thlr_1" pos="0.007145 0.0125 0.004125">
-          <joint name="shlrs_joint" pos="0 0 0" axis="0 -1 0" range="-1.5708 1.6"/>
+          <joint name="shlrs_joint" pos="0 0 0" axis="0 -1 0" range="-2.6 2.6"/>
           <inertial pos="0.02 0 -0.01" mass="0.006" diaginertia="0.0000011 0.0000022 0.0000022"/>
           <geom pos="0.0525 -0.0485 -0.022" type="mesh" mesh="c_thlr_1" class="visual" material="bittle_red"/>
           <geom pos="0.0525 -0.0485 -0.022" type="mesh" mesh="c_thlr_1" class="collision"/>
@@ -305,7 +331,7 @@
                 <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-9 1e-9 1e-9"/>
                 <geom pos="0.096933 -0.054939 -0.010094" type="mesh" mesh="c_tholr__1" class="visual" material="bittle_red"/>
                 <body name="servos_lr_1" pos="0 -0.007857 0">
-                  <joint name="shlrt_joint" pos="0 0 0" axis="0 1 0" range="-1.22173 1.5708"/>
+                  <joint name="shlrt_joint" pos="0 0 0" axis="0 1 0" range="-1.22173 2.6"/>
                   <inertial pos="0.05 -0.02 -0.005" mass="0.0107" diaginertia="9e-7 1.2e-6 6e-7"/>
                   <geom pos="0.096933 -0.047082 -0.010094" type="mesh" mesh="servos_lr_1" class="visual" material="bittle_black"/>
                   <geom pos="0.096933 -0.047082 -0.010094" type="mesh" mesh="servos_lr_1" class="collision"/>
