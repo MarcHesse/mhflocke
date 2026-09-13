@@ -38,7 +38,7 @@
      HEAD COLLISION (2026-09-03). jaw_1 and head__1 carry collision geoms.
      Until this date the whole head chain was class="visual" only: the snout
      passed through obstacles while the body was stopped by the front shanks.
-     Measured against a wall face at 0.250 m -- head__1 touches with the torso
+     Measured against a wall face at 0.250 m: head__1 touches with the torso
      origin at 0.148 m, jaw_1 at 0.153, front shanks at 0.182, torso at 0.187,
      so the head reaches 34 mm further forward than anything else.
      c_neck__1 and servo_neck__1 stay visual-only: inside the torso silhouette,
@@ -52,7 +52,7 @@
      swings within its +-0.5 rad limits, and its axis is tilted (-0.5 0 -0.866),
      so turning the head also moves the snout fore and aft. Swept against the same
      wall face the head reaches 102.0 mm ahead of the torso origin at -0.48 rad,
-     96.0 mm at 0 and 84.0 mm at +0.5 -- an 18 mm spread. The figures above are
+     96.0 mm at 0 and 84.0 mm at +0.5, an 18 mm spread. The figures above are
      quoted at -0.48, which is what the stand keyframe sets and also close to the
      maximum.
      THIS CHANGES THE PHYSICS: wall-distance results up to and including
